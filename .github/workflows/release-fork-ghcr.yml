@@ -1,0 +1,99 @@
+# Publish the self-hosted (Enterprise Mode) standalone image to GitHub Container
+# Registry for this fork. This is intentionally self-contained: it uses only the
+# built-in GITHUB_TOKEN and pushes to ghcr.io/<owner>/infisical, so it works on a
+# fork with NO upstream secrets (Depot, Docker Hub, Contentful, Omnibus are all
+# optional / absent here). The upstream release workflow
+# (release-standalone-docker-img-postgres-offical.yml) targets Docker Hub + ECR
+# Public under the `infisical/*` namespace and cannot run on this fork.
+name: Release fork image to GHCR
+
+on:
+    push:
+        branches:
+            - main
+        tags:
+            - "v*"
+    workflow_dispatch:
+        inputs:
+            tag:
+                description: "Extra image tag to publish (e.g. v0.1.0). Optional."
+                required: false
+                type: string
+
+concurrency:
+    group: ghcr-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    build-and-push:
+        name: Build standalone image and push to GHCR
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            packages: write # required to push to ghcr.io
+        env:
+            IMAGE: ghcr.io/${{ github.repository_owner }}/infisical
+        steps:
+            - name: ☁️ Checkout source
+              uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+              with:
+                  fetch-depth: 0
+
+            - name: Save short commit SHA
+              id: commit
+              run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+            - name: Compute image tags
+              id: tags
+              env:
+                  # Passed via env (not interpolated into the script) so a crafted
+                  # ref/input can't inject shell commands.
+                  IMAGE: ${{ env.IMAGE }}
+                  SHORT_SHA: ${{ steps.commit.outputs.short }}
+                  REF_TYPE: ${{ github.ref_type }}
+                  REF_NAME: ${{ github.ref_name }}
+                  MANUAL_TAG: ${{ inputs.tag }}
+              run: |
+                  {
+                    echo "tags<<EOF"
+                    # Always publish an immutable per-commit tag.
+                    echo "${IMAGE}:sha-${SHORT_SHA}"
+                    # On a version tag push, publish that version and :latest.
+                    if [ "${REF_TYPE}" = "tag" ]; then
+                      echo "${IMAGE}:${REF_NAME}"
+                      echo "${IMAGE}:latest"
+                    else
+                      # Branch build: track the branch tip.
+                      echo "${IMAGE}:${REF_NAME}"
+                    fi
+                    # Optional extra tag from manual dispatch.
+                    if [ -n "${MANUAL_TAG}" ]; then
+                      echo "${IMAGE}:${MANUAL_TAG}"
+                    fi
+                    echo "EOF"
+                  } >> "$GITHUB_OUTPUT"
+
+            - name: 🔧 Set up Docker Buildx
+              uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+            - name: 🐋 Login to GHCR
+              uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: 📦 Build standalone image and push to GHCR
+              uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
+              with:
+                  push: true
+                  context: .
+                  file: Dockerfile.standalone-infisical
+                  # amd64 only keeps CI fast and reliable (arm64 via QEMU is slow).
+                  # Add linux/arm64 here if you need multi-arch images.
+                  platforms: linux/amd64
+                  tags: ${{ steps.tags.outputs.tags }}
+                  build-args: |
+                      INFISICAL_PLATFORM_VERSION=${{ github.ref_type == 'tag' && github.ref_name || steps.commit.outputs.short }}
+                      DD_GIT_REPOSITORY_URL=${{ github.server_url }}/${{ github.repository }}
+                      DD_GIT_COMMIT_SHA=${{ github.sha }}
