@@ -27,7 +27,12 @@ import { OrgPermissionBillingActions, OrgPermissionSubjects } from "../permissio
 import { TPermissionServiceFactory } from "../permission/permission-service-types";
 import { BillingPlanRows, BillingPlanTableHead } from "./licence-enums";
 import { TLicenseDALFactory } from "./license-dal";
-import { getDefaultOnPremFeatures, getLicenseKeyConfig, setupLicenseRequestWithStore } from "./license-fns";
+import {
+  getDefaultOnPremFeatures,
+  getInstanceEnterpriseModeFeatures,
+  getLicenseKeyConfig,
+  setupLicenseRequestWithStore
+} from "./license-fns";
 import {
   InstanceType,
   LicenseType,
@@ -262,6 +267,13 @@ export const licenseServiceFactory = ({
 
       // this means this is the self-hosted oss version
       // else it would reach catch statement
+      //
+      // Fork customization (self-hosted Enterprise Mode): a pure self-hosted instance (no cloud license
+      // server key, no license key) resolves here with instanceType still InstanceType.OnPrem. Unlock all
+      // enterprise features instance-wide so self-hosted runs in full Enterprise Mode with no upgrade/upsell
+      // gating. Cloud and licensed on-prem instances never reach this branch (they return early above), so
+      // their gating stays driven by the license server.
+      onPremFeatures = getInstanceEnterpriseModeFeatures();
       isValidLicense = true;
     } catch (error) {
       logger.error(error, `init-license: encountered an error when init license`);

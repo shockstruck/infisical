@@ -134,6 +134,74 @@ export const getDefaultOnPremFeatures = (): TFeatureSet => ({
   secretsBrokering: true
 });
 
+// Fork customization (self-hosted Enterprise Mode): pure self-hosted instances — no cloud license
+// server key and no license key — run with every enterprise/paid capability unlocked and no upgrade
+// gating or upsell. This is applied ONLY when the instance resolves to InstanceType.OnPrem (see the
+// OSS fallthrough in license-service `init()`); cloud and licensed on-prem instances are untouched,
+// and getDefaultOnPremFeatures() still seeds the cloud/v2 entitlement projection so cloud gating and
+// the cloud error-fallback keep their free/paid behavior.
+//
+// Only capability flags are enabled — policy/enforcement flags (enforceMfa, enforceGoogleSSO) merely
+// unlock the *ability* to enforce; the actual enforcement stays admin-controlled on the org record,
+// so nothing is forced on. Limits are set to unlimited (null) or an effectively-unlimited finite
+// value where the consuming code has no null sentinel (audit log retention/stream count).
+export const getInstanceEnterpriseModeFeatures = (): TFeatureSet => ({
+  ...getDefaultOnPremFeatures(),
+  slug: "enterprise",
+  dynamicSecret: true,
+  pitRecovery: true,
+  ipAllowlisting: true,
+  rbac: true,
+  githubOrgSync: true,
+  customRateLimits: true,
+  subOrganization: true,
+  customAlerts: true,
+  secretAccessInsights: true,
+  auditLogs: true,
+  // 0 disables audit-log persistence entirely; use an effectively-unlimited (~100y) retention window.
+  auditLogsRetentionDays: 36500,
+  auditLogStreams: true,
+  auditLogStreamLimit: Number.MAX_SAFE_INTEGER,
+  samlSSO: true,
+  enforceGoogleSSO: true,
+  hsm: true,
+  oidcSSO: true,
+  scim: true,
+  ldap: true,
+  groups: true,
+  secretApproval: true,
+  secretRotation: true,
+  caCrl: true,
+  instanceUserManagement: true,
+  externalKms: true,
+  pkiEst: true,
+  pkiAcme: true,
+  pkiScep: true,
+  pkiPqc: true,
+  kmsPqc: true,
+  enforceMfa: true,
+  projectTemplates: true,
+  kmip: true,
+  gateway: true,
+  gatewayPool: true,
+  pamSlackNotifications: true,
+  sshHostGroups: true,
+  secretScanning: true,
+  enterpriseSecretSyncs: true,
+  enterpriseCertificateSyncs: true,
+  enterpriseAppConnections: true,
+  fips: true,
+  eventSubscriptions: true,
+  machineIdentityAuthTemplates: true,
+  pkiLegacyTemplates: true,
+  secretShareExternalBranding: true,
+  honeyTokens: true,
+  // No null "unlimited" sentinel here: the /limits route returns limit as z.number(), so use an
+  // effectively-unlimited finite value instead of null.
+  honeyTokenLimit: Number.MAX_SAFE_INTEGER,
+  secretsBrokering: true
+});
+
 export const setupLicenseRequestWithStore = (
   baseURL: string,
   refreshUrl: string,
