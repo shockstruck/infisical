@@ -47,10 +47,11 @@ import {
 import {
   PamAccountType,
   PamDiscoverySchedule,
+  PamDiscoveryType,
   pamKeys,
   TPamDiscoveredAccount,
   TPamDiscoverySource,
-  useListPamAccountsAdmin,
+  useListPamAccounts,
   useListPamDiscoveredAccounts,
   useListPamDiscoveryRuns,
   useListPamDiscoverySources,
@@ -67,12 +68,18 @@ import { PAM_DISCOVERY_TABS } from "../../components/pamResourceTabs";
 import { SheetSaveBar } from "../../components/SheetSaveBar";
 import {
   buildDiscoveryConfiguration,
+  buildUnixDiscoveryConfiguration,
   CredentialAccountField,
   DiscoveryConfigFields,
   discoveryConfigFormShape,
   discoveryConfigFromSource,
   ScheduleField,
-  TDiscoveryConfigFields
+  SshCredentialAccountsField,
+  TDiscoveryConfigFields,
+  TUnixDiscoveryConfigFields,
+  UnixDiscoveryConfigFields,
+  unixDiscoveryConfigFormShape,
+  unixDiscoveryConfigFromSource
 } from "./DiscoveryConfigFields";
 import { DiscoveryStatusBadge } from "./DiscoveryStatusBadge";
 import { ImportDiscoveredModal } from "./ImportDiscoveredModal";
@@ -87,7 +94,52 @@ const RunStatusBadge = ({ status }: { status: string }) => (
   <Badge variant={STATUS_VARIANT[status] ?? "neutral"}>{status}</Badge>
 );
 
-const configSchema = z.object({
+const NameField = ({ control }: { control: Control<{ name: string }> }) => (
+  <Controller
+    control={control}
+    name="name"
+    render={({ field, fieldState }) => (
+      <Field>
+        <FieldLabel>Name</FieldLabel>
+        <FieldContent>
+          <Input {...field} isError={!!fieldState.error} />
+          <FieldError>{fieldState.error?.message}</FieldError>
+        </FieldContent>
+      </Field>
+    )}
+  />
+);
+
+const GatewayField = ({
+  gatewayId,
+  gatewayPoolId,
+  onChange
+}: {
+  gatewayId: string | null;
+  gatewayPoolId: string | null;
+  onChange: (value: { gatewayId: string | null; gatewayPoolId: string | null }) => void;
+}) => (
+  <Field>
+    <FieldLabel>Gateway</FieldLabel>
+    <FieldContent>
+      <GatewayPicker isRequired value={{ gatewayId, gatewayPoolId }} onChange={onChange} />
+    </FieldContent>
+  </Field>
+);
+
+const ConfigCard = ({ children }: { children: ReactNode }) => (
+  <Card>
+    <CardHeader className="border-b">
+      <CardTitle className="text-base">Configuration</CardTitle>
+      <CardDescription>
+        Edit the source name, credential accounts, gateway, schedule, and account discovery.
+      </CardDescription>
+    </CardHeader>
+    <CardContent className="flex flex-col gap-4">{children}</CardContent>
+  </Card>
+);
+
+const activeDirectoryConfigSchema = z.object({
   name: z.string().min(1, "Name is required").max(64),
   credentialAccountId: z.string().uuid("Select a credential account"),
   schedule: z.nativeEnum(PamDiscoverySchedule),
@@ -96,9 +148,7 @@ const configSchema = z.object({
   ...discoveryConfigFormShape
 });
 
-type ConfigForm = z.infer<typeof configSchema>;
-
-const ConfigurationTab = ({
+const ActiveDirectoryConfigForm = ({
   source,
   onDirtyChange
 }: {
@@ -107,7 +157,7 @@ const ConfigurationTab = ({
 }) => {
   const updateSource = useUpdatePamDiscoverySource();
 
-  const defaults: ConfigForm = {
+  const defaults: z.infer<typeof activeDirectoryConfigSchema> = {
     name: source.name,
     credentialAccountId: source.credentialAccountId,
     schedule: source.schedule,
@@ -123,7 +173,7 @@ const ConfigurationTab = ({
     watch,
     setValue,
     formState: { isDirty }
-  } = useForm<ConfigForm>({ resolver: zodResolver(configSchema), defaultValues: defaults });
+  } = useForm({ resolver: zodResolver(activeDirectoryConfigSchema), defaultValues: defaults });
 
   useEffect(() => {
     onDirtyChange(isDirty);
@@ -135,10 +185,7 @@ const ConfigurationTab = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, reset]);
 
-  const gatewayId = watch("gatewayId");
-  const gatewayPoolId = watch("gatewayPoolId");
-
-  const onSubmit = (data: ConfigForm) => {
+  const onSubmit = (data: z.infer<typeof activeDirectoryConfigSchema>) => {
     updateSource.mutate(
       {
         sourceId: source.id,
@@ -156,60 +203,132 @@ const ConfigurationTab = ({
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="flex flex-1 flex-col gap-4 p-4">
-      <Card>
-        <CardHeader className="border-b">
-          <CardTitle className="text-base">Configuration</CardTitle>
-          <CardDescription>
-            Edit the source name, credential account, gateway, schedule, and local-account
-            discovery.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <Controller
-            control={control}
-            name="name"
-            render={({ field, fieldState }) => (
-              <Field>
-                <FieldLabel>Name</FieldLabel>
-                <FieldContent>
-                  <Input {...field} isError={!!fieldState.error} />
-                  <FieldError>{fieldState.error?.message}</FieldError>
-                </FieldContent>
-              </Field>
-            )}
-          />
-
-          <CredentialAccountField
-            control={control as unknown as Control<{ credentialAccountId: string }>}
-          />
-
-          <Field>
-            <FieldLabel>Gateway</FieldLabel>
-            <FieldContent>
-              <GatewayPicker
-                isRequired
-                value={{ gatewayId, gatewayPoolId }}
-                onChange={(value) => {
-                  setValue("gatewayId", value.gatewayId, { shouldDirty: true });
-                  setValue("gatewayPoolId", value.gatewayPoolId, { shouldDirty: true });
-                }}
-              />
-            </FieldContent>
-          </Field>
-
-          <ScheduleField
-            control={control as unknown as Control<{ schedule: PamDiscoverySchedule }>}
-          />
-
-          <DiscoveryConfigFields control={control as unknown as Control<TDiscoveryConfigFields>} />
-        </CardContent>
-      </Card>
+      <ConfigCard>
+        <NameField control={control as unknown as Control<{ name: string }>} />
+        <CredentialAccountField
+          control={control as unknown as Control<{ credentialAccountId: string }>}
+        />
+        <GatewayField
+          gatewayId={watch("gatewayId")}
+          gatewayPoolId={watch("gatewayPoolId")}
+          onChange={(value) => {
+            setValue("gatewayId", value.gatewayId, { shouldDirty: true });
+            setValue("gatewayPoolId", value.gatewayPoolId, { shouldDirty: true });
+          }}
+        />
+        <ScheduleField
+          control={control as unknown as Control<{ schedule: PamDiscoverySchedule }>}
+        />
+        <DiscoveryConfigFields control={control as unknown as Control<TDiscoveryConfigFields>} />
+      </ConfigCard>
 
       <div aria-hidden className="h-8 shrink-0" />
       {isDirty && <SheetSaveBar isPending={updateSource.isPending} onDiscard={() => reset()} />}
     </form>
   );
 };
+
+const unixConfigSchema = z.object({
+  name: z.string().min(1, "Name is required").max(64),
+  schedule: z.nativeEnum(PamDiscoverySchedule),
+  gatewayId: z.string().nullable(),
+  gatewayPoolId: z.string().nullable(),
+  ...unixDiscoveryConfigFormShape
+});
+
+const UnixConfigForm = ({
+  source,
+  onDirtyChange
+}: {
+  source: TPamDiscoverySource;
+  onDirtyChange: (isDirty: boolean) => void;
+}) => {
+  const updateSource = useUpdatePamDiscoverySource();
+
+  const defaults: z.infer<typeof unixConfigSchema> = {
+    name: source.name,
+    schedule: source.schedule,
+    gatewayId: source.gatewayId ?? null,
+    gatewayPoolId: source.gatewayPoolId ?? null,
+    ...unixDiscoveryConfigFromSource(source.discoveryConfiguration)
+  };
+
+  const {
+    control,
+    handleSubmit,
+    reset,
+    watch,
+    setValue,
+    formState: { isDirty }
+  } = useForm({ resolver: zodResolver(unixConfigSchema), defaultValues: defaults });
+
+  useEffect(() => {
+    onDirtyChange(isDirty);
+    return () => onDirtyChange(false);
+  }, [isDirty, onDirtyChange]);
+
+  useEffect(() => {
+    reset(defaults);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, reset]);
+
+  const onSubmit = (data: z.infer<typeof unixConfigSchema>) => {
+    updateSource.mutate(
+      {
+        sourceId: source.id,
+        discoveryType: source.discoveryType,
+        name: data.name,
+        credentialAccountId: data.credentialAccountIds[0],
+        schedule: data.schedule,
+        gatewayId: data.gatewayId,
+        gatewayPoolId: data.gatewayPoolId,
+        configuration: buildUnixDiscoveryConfiguration(data)
+      },
+      { onSuccess: () => createNotification({ type: "success", text: "Discovery source updated" }) }
+    );
+  };
+
+  return (
+    <form onSubmit={handleSubmit(onSubmit)} className="flex flex-1 flex-col gap-4 p-4">
+      <ConfigCard>
+        <NameField control={control as unknown as Control<{ name: string }>} />
+        <SshCredentialAccountsField
+          control={control as unknown as Control<{ credentialAccountIds: string[] }>}
+        />
+        <GatewayField
+          gatewayId={watch("gatewayId")}
+          gatewayPoolId={watch("gatewayPoolId")}
+          onChange={(value) => {
+            setValue("gatewayId", value.gatewayId, { shouldDirty: true });
+            setValue("gatewayPoolId", value.gatewayPoolId, { shouldDirty: true });
+          }}
+        />
+        <ScheduleField
+          control={control as unknown as Control<{ schedule: PamDiscoverySchedule }>}
+        />
+        <UnixDiscoveryConfigFields
+          control={control as unknown as Control<TUnixDiscoveryConfigFields>}
+        />
+      </ConfigCard>
+
+      <div aria-hidden className="h-8 shrink-0" />
+      {isDirty && <SheetSaveBar isPending={updateSource.isPending} onDiscard={() => reset()} />}
+    </form>
+  );
+};
+
+const ConfigurationTab = ({
+  source,
+  onDirtyChange
+}: {
+  source: TPamDiscoverySource;
+  onDirtyChange: (isDirty: boolean) => void;
+}) =>
+  source.discoveryType === PamDiscoveryType.Unix ? (
+    <UnixConfigForm source={source} onDirtyChange={onDirtyChange} />
+  ) : (
+    <ActiveDirectoryConfigForm source={source} onDirtyChange={onDirtyChange} />
+  );
 
 type Props = {
   isOpen: boolean;
@@ -232,7 +351,7 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
   const { tab, setTab } = usePamSheetState("discoverySourceId");
   const { data: sources = [] } = useListPamDiscoverySources();
   const { data: discoveryTypes = [] } = useListPamDiscoveryTypes();
-  const { data: adminAccounts = [] } = useListPamAccountsAdmin();
+  const { data: adminAccounts = [] } = useListPamAccounts();
   const { map: accountTypeMap } = usePamAccountTypeMap();
   const source = sources.find((s) => s.id === sourceId);
   const typeMeta = discoveryTypes.find((t) => t.type === source?.discoveryType);
@@ -268,6 +387,9 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
       queryClient.invalidateQueries({
         queryKey: [...pamKeys.discovery(), "discovered", sourceId ?? ""]
       });
+      // A scan reconciles dependencies onto managed accounts, so refresh account views (their dependency
+      // lists are keyed under pamKeys.account()) which the discovery scan otherwise never invalidates.
+      queryClient.invalidateQueries({ queryKey: pamKeys.account() });
     }
     prevRunStatus.current = latestRunStatus;
   }, [latestRunStatus, sourceId, queryClient]);
@@ -337,7 +459,7 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
           </InputGroup>
 
           {totalCount === 0 ? (
-            <Empty>
+            <Empty className="border">
               <EmptyHeader>
                 <EmptyTitle>
                   {debouncedSearch
@@ -360,11 +482,13 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
                     </TableHead>
                     <TableHead>Name</TableHead>
                     <TableHead className="w-40">Type</TableHead>
+                    <TableHead className="w-40">Dependencies</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {visibleStaged.map((account) => {
                     const typeDetails = accountTypeMap[account.accountType as PamAccountType];
+                    const hasDeps = account.dependencyCount > 0;
                     return (
                       <TableRow key={account.id}>
                         <TableCell>
@@ -390,6 +514,13 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
                               {typeDetails?.name ?? account.accountType}
                             </span>
                           </div>
+                        </TableCell>
+                        <TableCell>
+                          {hasDeps ? (
+                            <Badge variant="neutral">{account.dependencyCount}</Badge>
+                          ) : (
+                            <span className="text-sm text-muted">-</span>
+                          )}
                         </TableCell>
                       </TableRow>
                     );
@@ -440,16 +571,16 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
         </CardHeader>
         <CardContent>
           {runs.length === 0 ? (
-            <Empty>
+            <Empty className="border">
               <EmptyHeader>
                 <EmptyTitle>This source has not been scanned yet.</EmptyTitle>
               </EmptyHeader>
             </Empty>
           ) : (
-            <Table>
+            <Table className="w-full table-fixed">
               <TableHeader>
                 <TableRow>
-                  <TableHead>Started</TableHead>
+                  <TableHead className="w-44">Started</TableHead>
                   <TableHead className="w-28">Status</TableHead>
                   <TableHead>Result</TableHead>
                 </TableRow>
@@ -462,7 +593,7 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
 
                   return (
                     <Fragment key={run.id}>
-                      <TableRow className={hasMachineErrors ? "border-b-0" : undefined}>
+                      <TableRow className={hasMachineErrors ? "[&>td]:border-b-0" : undefined}>
                         <TableCell className="text-muted">
                           {run.startedAt
                             ? format(new Date(run.startedAt), "MMM d, yyyy h:mm a")
@@ -471,34 +602,49 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
                         <TableCell>
                           <RunStatusBadge status={run.status} />
                         </TableCell>
-                        <TableCell className="text-muted">
+                        <TableCell className="whitespace-normal text-muted">
                           {run.status === "failed" ? (
-                            <span className="whitespace-pre-line text-danger">
+                            <span className="break-words whitespace-pre-line text-danger">
                               {run.errorMessage}
                             </span>
                           ) : (
-                            `${run.discoveredCount} found, ${run.newCount} new`
+                            <div className="grid w-fit grid-cols-[auto_auto] gap-x-6">
+                              <span>
+                                {run.discoveredCount}{" "}
+                                {run.discoveredCount === 1 ? "account" : "accounts"}
+                              </span>
+                              <span className="text-muted/60">{run.newCount} new</span>
+                              {typeof run.dependencyCount === "number" && (
+                                <>
+                                  <span>
+                                    {run.dependencyCount}{" "}
+                                    {run.dependencyCount === 1 ? "dep" : "deps"}
+                                  </span>
+                                  <span className="text-muted/60">
+                                    {run.newDependencyCount ?? 0} new
+                                  </span>
+                                </>
+                              )}
+                            </div>
                           )}
                         </TableCell>
                       </TableRow>
 
                       {hasMachineErrors && (
-                        <TableRow className="hover:bg-transparent">
-                          <TableCell colSpan={3} className="pt-0 pb-4">
-                            <div className="rounded-md border border-warning/20 bg-warning/[0.06] p-3">
-                              <div className="flex items-center gap-2 text-sm font-medium text-warning">
-                                <TriangleAlert className="size-4 shrink-0" />
-                                The scan failed to find local accounts on certain machines
-                              </div>
-                              <ul className="mt-2 flex flex-col gap-1.5">
-                                {machineErrors.map((m) => (
-                                  <li key={m.machine} className="text-xs">
-                                    <span className="font-medium text-foreground">{m.machine}</span>
-                                    <span className="text-muted">: {m.error}</span>
-                                  </li>
-                                ))}
-                              </ul>
+                        <TableRow className="bg-warning/[0.04] hover:bg-warning/[0.04]">
+                          <TableCell colSpan={3} className="pt-3 pb-4 whitespace-normal">
+                            <div className="flex items-center gap-2 text-sm font-medium text-warning">
+                              <TriangleAlert className="size-4 shrink-0" />
+                              The scan couldn&apos;t complete on some machines
                             </div>
+                            <ul className="mt-2 flex flex-col gap-1.5">
+                              {machineErrors.map((m) => (
+                                <li key={m.machine} className="text-xs break-words">
+                                  <span className="font-medium text-foreground">{m.machine}</span>
+                                  <span className="text-muted">: {m.error}</span>
+                                </li>
+                              ))}
+                            </ul>
                           </TableCell>
                         </TableRow>
                       )}

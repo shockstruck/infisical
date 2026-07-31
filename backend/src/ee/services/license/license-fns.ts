@@ -68,6 +68,9 @@ export const getDefaultOnPremFeatures = (): TFeatureSet => ({
   tier: -1,
   workspaceLimit: null,
   workspacesUsed: 0,
+  secretSyncLimit: null,
+  maxInternalCas: null,
+  maxPamAccounts: null,
   memberLimit: null,
   membersUsed: 0,
   environmentLimit: null,
@@ -112,6 +115,7 @@ export const getDefaultOnPremFeatures = (): TFeatureSet => ({
   pkiAcme: true,
   pkiScep: false,
   pkiPqc: false,
+  pkiCodeSigning: null,
   kmsPqc: false,
   enforceMfa: false,
   projectTemplates: false,
@@ -131,20 +135,14 @@ export const getDefaultOnPremFeatures = (): TFeatureSet => ({
   secretShareExternalBranding: false,
   honeyTokens: false,
   honeyTokenLimit: 0,
-  secretsBrokering: true
+  secretsBrokering: true,
+  // product gating
+  pam: null,
+  certManager: null,
+  secretsTemporaryAccess: null,
+  enterprisePamAccount: null
 });
 
-// Fork customization (self-hosted Enterprise Mode): pure self-hosted instances — no cloud license
-// server key and no license key — run with every enterprise/paid capability unlocked and no upgrade
-// gating or upsell. This is applied ONLY when the instance resolves to InstanceType.OnPrem (see the
-// OSS fallthrough in license-service `init()`); cloud and licensed on-prem instances are untouched,
-// and getDefaultOnPremFeatures() still seeds the cloud/v2 entitlement projection so cloud gating and
-// the cloud error-fallback keep their free/paid behavior.
-//
-// Only capability flags are enabled — policy/enforcement flags (enforceMfa, enforceGoogleSSO) merely
-// unlock the *ability* to enforce; the actual enforcement stays admin-controlled on the org record,
-// so nothing is forced on. Limits are set to unlimited (null) or an effectively-unlimited finite
-// value where the consuming code has no null sentinel (audit log retention/stream count).
 export const getInstanceEnterpriseModeFeatures = (): TFeatureSet => ({
   ...getDefaultOnPremFeatures(),
   slug: "enterprise",
@@ -158,7 +156,6 @@ export const getInstanceEnterpriseModeFeatures = (): TFeatureSet => ({
   customAlerts: true,
   secretAccessInsights: true,
   auditLogs: true,
-  // 0 disables audit-log persistence entirely; use an effectively-unlimited (~100y) retention window.
   auditLogsRetentionDays: 36500,
   auditLogStreams: true,
   auditLogStreamLimit: Number.MAX_SAFE_INTEGER,
@@ -180,6 +177,7 @@ export const getInstanceEnterpriseModeFeatures = (): TFeatureSet => ({
   pkiPqc: true,
   kmsPqc: true,
   enforceMfa: true,
+  enforceIdentityLimit: false,
   projectTemplates: true,
   kmip: true,
   gateway: true,
@@ -196,8 +194,6 @@ export const getInstanceEnterpriseModeFeatures = (): TFeatureSet => ({
   pkiLegacyTemplates: true,
   secretShareExternalBranding: true,
   honeyTokens: true,
-  // No null "unlimited" sentinel here: the /limits route returns limit as z.number(), so use an
-  // effectively-unlimited finite value instead of null.
   honeyTokenLimit: Number.MAX_SAFE_INTEGER,
   secretsBrokering: true
 });

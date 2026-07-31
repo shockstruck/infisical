@@ -131,11 +131,14 @@ import { ValidateHerokuConnectionCredentialsSchema } from "./heroku";
 import { herokuConnectionService } from "./heroku/heroku-connection-service";
 import { ValidateHumanitecConnectionCredentialsSchema } from "./humanitec";
 import { humanitecConnectionService } from "./humanitec/humanitec-connection-service";
+import { ValidateKempLoadMasterConnectionCredentialsSchema } from "./kemp-loadmaster";
+import { kempLoadMasterConnectionService } from "./kemp-loadmaster/kemp-loadmaster-connection-service";
 import { ValidateLaravelForgeConnectionCredentialsSchema } from "./laravel-forge";
 import { laravelForgeConnectionService } from "./laravel-forge/laravel-forge-connection-service";
 import { ValidateLdapConnectionCredentialsSchema } from "./ldap";
 import { ValidateLiteLLMConnectionCredentialsSchema } from "./litellm";
 import { liteLLMConnectionService } from "./litellm/litellm-connection-service";
+import { ValidateMicrosoftIntuneConnectionCredentialsSchema } from "./microsoft-intune";
 import { ValidateMongoDBConnectionCredentialsSchema } from "./mongodb";
 import { ValidateMsSqlConnectionCredentialsSchema } from "./mssql";
 import { ValidateMySqlConnectionCredentialsSchema } from "./mysql";
@@ -144,6 +147,10 @@ import { netlifyConnectionService } from "./netlify/netlify-connection-service";
 import { ValidateNetScalerConnectionCredentialsSchema } from "./netscaler";
 import { ValidateNorthflankConnectionCredentialsSchema } from "./northflank";
 import { northflankConnectionService } from "./northflank/northflank-connection-service";
+import {
+  nutanixPrismCentralConnectionService,
+  ValidateNutanixPrismCentralConnectionCredentialsSchema
+} from "./nutanix-prism-central";
 import { ValidateOctopusDeployConnectionCredentialsSchema } from "./octopus-deploy";
 import { octopusDeployConnectionService } from "./octopus-deploy/octopus-deploy-connection-service";
 import { ValidateOktaConnectionCredentialsSchema } from "./okta";
@@ -187,6 +194,7 @@ import { ValidateVercelConnectionCredentialsSchema } from "./vercel";
 import { vercelConnectionService } from "./vercel/vercel-connection-service";
 import { ValidateWindmillConnectionCredentialsSchema } from "./windmill";
 import { windmillConnectionService } from "./windmill/windmill-connection-service";
+import { ValidateWinRMConnectionCredentialsSchema } from "./winrm/winrm-connection-schemas";
 import { ValidateZabbixConnectionCredentialsSchema } from "./zabbix";
 import { zabbixConnectionService } from "./zabbix/zabbix-connection-service";
 
@@ -222,6 +230,7 @@ const VALIDATE_APP_CONNECTION_CREDENTIALS_MAP: Record<AppConnection, TValidateAp
   [AppConnection.AzureDevOps]: ValidateAzureDevOpsConnectionCredentialsSchema,
   [AppConnection.AzureADCS]: ValidateAzureADCSConnectionCredentialsSchema,
   [AppConnection.ADCS]: ValidateADCSConnectionCredentialsSchema,
+  [AppConnection.WinRM]: ValidateWinRMConnectionCredentialsSchema,
   [AppConnection.Databricks]: ValidateDatabricksConnectionCredentialsSchema,
   [AppConnection.Humanitec]: ValidateHumanitecConnectionCredentialsSchema,
   [AppConnection.TerraformCloud]: ValidateTerraformCloudConnectionCredentialsSchema,
@@ -270,11 +279,13 @@ const VALIDATE_APP_CONNECTION_CREDENTIALS_MAP: Record<AppConnection, TValidateAp
   [AppConnection.CircleCI]: ValidateCircleCIConnectionCredentialsSchema,
   [AppConnection.Cloud66]: ValidateCloud66ConnectionCredentialsSchema,
   [AppConnection.AzureEntraId]: ValidateAzureEntraIdConnectionCredentialsSchema,
+  [AppConnection.MicrosoftIntune]: ValidateMicrosoftIntuneConnectionCredentialsSchema,
   [AppConnection.Venafi]: ValidateVenafiConnectionCredentialsSchema,
   [AppConnection.VenafiTpp]: ValidateVenafiTppConnectionCredentialsSchema,
   [AppConnection.ExternalInfisical]: ValidateExternalInfisicalConnectionCredentialsSchema,
   [AppConnection.Doppler]: ValidateDopplerConnectionCredentialsSchema,
   [AppConnection.NetScaler]: ValidateNetScalerConnectionCredentialsSchema,
+  [AppConnection.KempLoadMaster]: ValidateKempLoadMasterConnectionCredentialsSchema,
   [AppConnection.Anthropic]: ValidateAnthropicConnectionCredentialsSchema,
   [AppConnection.OVH]: ValidateOvhConnectionCredentialsSchema,
   [AppConnection.Devin]: ValidateDevinConnectionCredentialsSchema,
@@ -290,7 +301,8 @@ const VALIDATE_APP_CONNECTION_CREDENTIALS_MAP: Record<AppConnection, TValidateAp
   [AppConnection.Rundeck]: ValidateRundeckConnectionCredentialsSchema,
   [AppConnection.Qovery]: ValidateQoveryConnectionCredentialsSchema,
   [AppConnection.LiteLLM]: ValidateLiteLLMConnectionCredentialsSchema,
-  [AppConnection.Fireworks]: ValidateFireworksConnectionCredentialsSchema
+  [AppConnection.Fireworks]: ValidateFireworksConnectionCredentialsSchema,
+  [AppConnection.NutanixPrismCentral]: ValidateNutanixPrismCentralConnectionCredentialsSchema
 };
 
 export const appConnectionServiceFactory = ({
@@ -1340,6 +1352,7 @@ export const appConnectionServiceFactory = ({
     gcp: gcpConnectionService(connectAppConnectionById),
     databricks: databricksConnectionService(connectAppConnectionById, appConnectionDAL, kmsService),
     aws: awsConnectionService(connectAppConnectionById),
+    kempLoadMaster: kempLoadMasterConnectionService(connectAppConnectionById, gatewayV2Service, gatewayPoolService),
     humanitec: humanitecConnectionService(connectAppConnectionById),
     terraformCloud: terraformCloudConnectionService(connectAppConnectionById),
     camunda: camundaConnectionService(connectAppConnectionById, appConnectionDAL, kmsService),
@@ -1392,6 +1405,11 @@ export const appConnectionServiceFactory = ({
     travisCI: travisCIConnectionService(connectAppConnectionById),
     snowflake: snowflakeConnectionService(connectAppConnectionById),
     litellm: liteLLMConnectionService(connectAppConnectionById),
-    fireworks: fireworksConnectionService(connectAppConnectionById)
+    fireworks: fireworksConnectionService(connectAppConnectionById),
+    nutanixPrismCentral: nutanixPrismCentralConnectionService(
+      connectAppConnectionById,
+      gatewayV2Service,
+      gatewayPoolService
+    )
   };
 };

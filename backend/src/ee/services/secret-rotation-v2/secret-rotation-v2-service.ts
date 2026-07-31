@@ -17,6 +17,7 @@ import { auth0ClientSecretRotationFactory } from "@app/ee/services/secret-rotati
 import { azureClientSecretRotationFactory } from "@app/ee/services/secret-rotation-v2/azure-client-secret/azure-client-secret-rotation-fns";
 import { convexAccessKeyRotationFactory } from "@app/ee/services/secret-rotation-v2/convex-access-key/convex-access-key-rotation-fns";
 import { databricksServicePrincipalSecretRotationFactory } from "@app/ee/services/secret-rotation-v2/databricks-service-principal-secret/databricks-service-principal-secret-rotation-fns";
+import { datadogApiKeyRotationFactory } from "@app/ee/services/secret-rotation-v2/datadog-api-key/datadog-api-key-rotation-fns";
 import { datadogApplicationKeySecretRotationFactory } from "@app/ee/services/secret-rotation-v2/datadog-application-key-secret/datadog-application-key-secret-rotation-fns";
 import { fireworksApiKeyRotationFactory } from "@app/ee/services/secret-rotation-v2/fireworks-api-key/fireworks-api-key-rotation-fns";
 import { ldapPasswordRotationFactory } from "@app/ee/services/secret-rotation-v2/ldap-password/ldap-password-rotation-fns";
@@ -61,7 +62,7 @@ import {
   TUpdateSecretRotationV2DTO
 } from "@app/ee/services/secret-rotation-v2/secret-rotation-v2-types";
 import { sqlCredentialsRotationFactory } from "@app/ee/services/secret-rotation-v2/shared/sql-credentials";
-import { TSecretSnapshotServiceFactory } from "@app/ee/services/secret-snapshot/secret-snapshot-service";
+import { snowflakeUserKeyPairRotationFactory } from "@app/ee/services/secret-rotation-v2/snowflake-user-key-pair/snowflake-user-key-pair-rotation-fns";
 import { KeyStorePrefixes, PgSqlLock, TKeyStoreFactory } from "@app/keystore/keystore";
 import { getConfig } from "@app/lib/config/env";
 import { DatabaseErrorCode } from "@app/lib/error-codes";
@@ -164,7 +165,6 @@ export type TSecretRotationV2ServiceFactoryDep = {
   resourceMetadataDAL: Pick<TResourceMetadataDALFactory, "insertMany" | "delete">;
   secretTagDAL: Pick<TSecretTagDALFactory, "saveTagsToSecretV2" | "deleteTagsToSecretV2" | "find">;
   secretQueueService: Pick<TSecretQueueFactory, "syncSecrets" | "removeSecretReminder">;
-  snapshotService: Pick<TSecretSnapshotServiceFactory, "performSnapshot">;
   queueService: Pick<TQueueServiceFactory, "queue">;
   appConnectionDAL: Pick<TAppConnectionDALFactory, "findById" | "update" | "updateById">;
   folderCommitService: Pick<TFolderCommitServiceFactory, "createCommit">;
@@ -210,8 +210,10 @@ const SECRET_ROTATION_FACTORY_MAP: Record<SecretRotation, TRotationFactoryImplem
     salesforceOauthCredentialsRotationFactory as TRotationFactoryImplementation,
   [SecretRotation.DatadogApplicationKeySecret]:
     datadogApplicationKeySecretRotationFactory as TRotationFactoryImplementation,
+  [SecretRotation.DatadogApiKey]: datadogApiKeyRotationFactory as TRotationFactoryImplementation,
   [SecretRotation.ConvexAccessKey]: convexAccessKeyRotationFactory as TRotationFactoryImplementation,
-  [SecretRotation.FireworksApiKey]: fireworksApiKeyRotationFactory as TRotationFactoryImplementation
+  [SecretRotation.FireworksApiKey]: fireworksApiKeyRotationFactory as TRotationFactoryImplementation,
+  [SecretRotation.SnowflakeUserKeyPair]: snowflakeUserKeyPairRotationFactory as TRotationFactoryImplementation
 };
 
 export const secretRotationV2ServiceFactory = ({
@@ -229,7 +231,6 @@ export const secretRotationV2ServiceFactory = ({
   kmsService,
   auditLogService,
   secretQueueService,
-  snapshotService,
   keyStore,
   queueService,
   folderCommitService,
@@ -732,7 +733,6 @@ export const secretRotationV2ServiceFactory = ({
       }, temporaryParameters);
 
       await secretV2BridgeDAL.invalidateSecretCacheByProjectId(projectId);
-      await snapshotService.performSnapshot(folder.id);
       await secretQueueService.syncSecrets({
         orgId: connection.orgId,
         secretPath,
@@ -873,7 +873,6 @@ export const secretRotationV2ServiceFactory = ({
 
       if (secretsMappingUpdated) {
         await secretV2BridgeDAL.invalidateSecretCacheByProjectId(projectId);
-        await snapshotService.performSnapshot(folder.id);
         await secretQueueService.syncSecrets({
           orgId: connection.orgId,
           secretPath: folder.path,
@@ -1011,7 +1010,6 @@ export const secretRotationV2ServiceFactory = ({
 
     if (deleteSecrets) {
       await secretV2BridgeDAL.invalidateSecretCacheByProjectId(projectId);
-      await snapshotService.performSnapshot(folder.id);
       await secretQueueService.syncSecrets({
         orgId: connection.orgId,
         secretPath: folder.path,
@@ -1211,7 +1209,6 @@ export const secretRotationV2ServiceFactory = ({
 
     await secretV2BridgeDAL.invalidateSecretCacheByProjectId(projectId);
 
-    await snapshotService.performSnapshot(destinationFolder.id);
     await secretQueueService.syncSecrets({
       orgId: connection.orgId,
       secretPath: destinationSecretPath,
@@ -1221,7 +1218,6 @@ export const secretRotationV2ServiceFactory = ({
       excludeReplication: true
     });
 
-    await snapshotService.performSnapshot(sourceFolderId);
     await secretQueueService.syncSecrets({
       orgId: connection.orgId,
       secretPath: folder.path,
@@ -1452,7 +1448,6 @@ export const secretRotationV2ServiceFactory = ({
       });
 
       await secretV2BridgeDAL.invalidateSecretCacheByProjectId(projectId);
-      await snapshotService.performSnapshot(folder.id);
       await secretQueueService.syncSecrets({
         orgId: connection.orgId,
         secretPath: folder.path,
@@ -2115,7 +2110,6 @@ export const secretRotationV2ServiceFactory = ({
     );
 
     await secretV2BridgeDAL.invalidateSecretCacheByProjectId(projectId);
-    await snapshotService.performSnapshot(folder.id);
     await secretQueueService.syncSecrets({
       orgId: connection.orgId,
       secretPath: folder.path,

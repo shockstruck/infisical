@@ -279,6 +279,8 @@ const buildAdminPermissionRules = () => {
       ProjectPermissionCmekActions.Decrypt,
       ProjectPermissionCmekActions.Sign,
       ProjectPermissionCmekActions.Verify,
+      ProjectPermissionCmekActions.GenerateMac,
+      ProjectPermissionCmekActions.VerifyMac,
       ProjectPermissionCmekActions.Rotate,
       ProjectPermissionCmekActions.ExportPrivateKey
     ],
@@ -474,7 +476,8 @@ const buildAdminPermissionRules = () => {
       ProjectPermissionProxiedServiceActions.Create,
       ProjectPermissionProxiedServiceActions.Edit,
       ProjectPermissionProxiedServiceActions.Delete,
-      ProjectPermissionProxiedServiceActions.Proxy
+      ProjectPermissionProxiedServiceActions.Proxy,
+      ProjectPermissionProxiedServiceActions.ReportUsage
     ],
     ProjectPermissionSub.ProxiedServices
   );
@@ -643,6 +646,8 @@ const buildMemberPermissionRules = () => {
       ProjectPermissionCmekActions.Decrypt,
       ProjectPermissionCmekActions.Sign,
       ProjectPermissionCmekActions.Verify,
+      ProjectPermissionCmekActions.GenerateMac,
+      ProjectPermissionCmekActions.VerifyMac,
       ProjectPermissionCmekActions.Rotate
     ],
     ProjectPermissionSub.Cmek
@@ -805,28 +810,11 @@ const buildCryptographicOperatorPermissionRules = () => {
       ProjectPermissionCmekActions.Encrypt,
       ProjectPermissionCmekActions.Decrypt,
       ProjectPermissionCmekActions.Sign,
-      ProjectPermissionCmekActions.Verify
+      ProjectPermissionCmekActions.Verify,
+      ProjectPermissionCmekActions.GenerateMac,
+      ProjectPermissionCmekActions.VerifyMac
     ],
     ProjectPermissionSub.Cmek
-  );
-
-  return rules;
-};
-
-const buildAgentPermissionRules = () => {
-  const { can, rules } = new AbilityBuilder<MongoAbility<ProjectPermissionSet>>(createMongoAbility);
-
-  can(ProjectPermissionProxiedServiceActions.Proxy, ProjectPermissionSub.ProxiedServices);
-
-  return rules;
-};
-
-const buildAgentProxyPermissionRules = () => {
-  const { can, rules } = new AbilityBuilder<MongoAbility<ProjectPermissionSet>>(createMongoAbility);
-
-  can(
-    [ProjectPermissionSecretActions.DescribeSecret, ProjectPermissionSecretActions.ReadValue],
-    ProjectPermissionSub.Secrets
   );
 
   return rules;
@@ -843,10 +831,6 @@ export const sshHostBootstrapPermissions = buildSshHostBootstrapPermissionRules(
 
 // KMS
 export const cryptographicOperatorPermissions = buildCryptographicOperatorPermissionRules();
-
-// Secrets Brokering (Agent Proxy)
-export const agentPermissions = buildAgentPermissionRules();
-export const agentProxyPermissions = buildAgentProxyPermissionRules();
 
 const buildApplicationAdminPermissionRules = () => {
   const { can, rules } = new AbilityBuilder<MongoAbility<ResourcePermissionSet>>(createMongoAbility);
@@ -1180,7 +1164,12 @@ const buildPamResourceConnectorPermissionRules = () => {
 const buildPamResourceAuditorPermissionRules = () => {
   const { can, rules } = new AbilityBuilder<MongoAbility<ResourcePermissionSet>>(createMongoAbility);
   can(
-    [ResourcePermissionPamResourceActions.ViewSessions, ResourcePermissionPamResourceActions.ViewAuditLogs],
+    [
+      ResourcePermissionPamResourceActions.ReadFolder,
+      ResourcePermissionPamResourceActions.ReadAccounts,
+      ResourcePermissionPamResourceActions.ViewSessions,
+      ResourcePermissionPamResourceActions.ViewAuditLogs
+    ],
     ResourcePermissionSub.PamResource
   );
   return rules;

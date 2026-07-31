@@ -2692,7 +2692,7 @@ const OverviewPageContent = () => {
                       }
                       handlePopUpOpen("upgradePlan", {
                         isEnterpriseFeature: true,
-                        text: "Adding dynamic secrets can be unlocked if you upgrade to Infisical Enterprise plan."
+                        text: "Upgrade to the Infisical Secret Management advanced plan to unlock dynamic secrets."
                       });
                     }}
                     onAddSecretRotation={() => {
@@ -3222,6 +3222,7 @@ const OverviewPageContent = () => {
                                   handlePopUpOpen("deleteSecretImport", secretImport)
                                 }
                                 importedSecrets={importedSecretsFlat}
+                                isVisible={isSingleEnvSecretsVisible}
                               />
                             ))}
                           {!isSingleEnvView &&
@@ -3243,6 +3244,7 @@ const OverviewPageContent = () => {
                                     handlePopUpOpen("deleteSecretImport", secretImport)
                                   }
                                   importedSecrets={importedSecretsFlat}
+                                  isVisible={isSingleEnvSecretsVisible}
                                 />
                               )
                             )}
@@ -3486,6 +3488,11 @@ const OverviewPageContent = () => {
             onClose={() => handlePopUpClose("addSecretsInAllEnvs")}
             isBatchMode={isBatchModeActive}
             onSecretCreated={checkSecretsActivation}
+            onUploadSecrets={(env) => {
+              setImportParsedSecrets(env ?? null);
+              handlePopUpClose("addSecretsInAllEnvs");
+              handlePopUpOpen("importSecrets");
+            }}
             onBatchSecretCreate={(params) => {
               addPendingChange(
                 {
@@ -3711,12 +3718,14 @@ const OverviewPageContent = () => {
         projectId={projectId}
         environment={singleEnvSlug}
         secretPath={secretPath}
+        existingNames={proxiedServiceNames}
       />
       <EditProxiedServiceModal
         isOpen={popUp.editProxiedService.isOpen}
         onOpenChange={(isOpen) => handlePopUpToggle("editProxiedService", isOpen)}
         proxiedService={popUp.editProxiedService.data as TDashboardProxiedService}
         projectId={projectId}
+        existingNames={proxiedServiceNames}
       />
       <DeleteProxiedServiceModal
         isOpen={popUp.deleteProxiedService.isOpen}
@@ -3960,6 +3969,7 @@ const OverviewPageContent = () => {
           }}
           selectedActions={popUp.requestAccess.data as ProjectPermissionActions[] | undefined}
           secretPath={pathPolicies[0].secretPath}
+          environment={singleEnvSlug}
         />
       )}
       {invitePopUp.inviteMembers.isOpen && (
