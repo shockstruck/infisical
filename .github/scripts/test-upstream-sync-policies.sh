@@ -392,6 +392,46 @@ test_release_policy() {
     UPSTREAM_SHA="$UPSTREAM_SHA" FORK_SHA="$FORK_SHA" REGISTRY_FIXTURE=absent "$RELEASE_SCRIPT"
 }
 
+test_provenance_policy() {
+  local fixture="$ROOT/slsa-v1-provenance.json"
+
+  jq -n \
+    --arg t v0.162.15 \
+    --arg u "$UPSTREAM_SHA" \
+    --arg f "$FORK_SHA" '
+      {
+        predicateType: "https://slsa.dev/provenance/v1",
+        predicate: {
+          buildDefinition: {
+            externalParameters: {
+              request: {
+                args: {
+                  "build-arg:UPSTREAM_TAG": $t,
+                  "build-arg:UPSTREAM_COMMIT_SHA": $u,
+                  "build-arg:FORK_COMMIT_SHA": $f
+                }
+              }
+            }
+          }
+        }
+      }
+  ' > "$fixture"
+
+  (
+    # shellcheck source=resolve-fork-release.sh
+    source "$RELEASE_SCRIPT"
+    verify_provenance_identity "$(<"$fixture")" v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA"
+  )
+
+  expect_failure provenance-identity-mismatch env \
+    RELEASE_SCRIPT="$RELEASE_SCRIPT" PROVENANCE_FIXTURE="$fixture" \
+    UPSTREAM_SHA="$UPSTREAM_SHA" FORK_SHA="$FORK_SHA" bash -c '
+      source "$RELEASE_SCRIPT"
+      verify_provenance_identity "$(<"$PROVENANCE_FIXTURE")" \
+        v0.162.15 "$UPSTREAM_SHA" 1111111111111111111111111111111111111111
+    '
+}
+
 main() {
   command -v git >/dev/null 2>&1 || die "git is required"
   command -v jq >/dev/null 2>&1 || die "jq is required"
@@ -417,6 +457,7 @@ main() {
 
   prepare_fixture
   test_prepare_policy
+  test_provenance_policy
   test_release_policy
   printf 'All guarded upstream sync policy fixtures passed.\n'
 }
