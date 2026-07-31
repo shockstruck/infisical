@@ -503,7 +503,10 @@ main() {
     git -C "$worktree" switch -c "$sync_branch" >/dev/null
     BRANCH_TO_DELETE="$sync_branch"
 
-    if git -C "$worktree" merge --no-ff --no-commit "$upstream_sha"; then
+    if git -C "$worktree" \
+      -c user.name="upstream-sync[bot]" \
+      -c user.email="upstream-sync[bot]@users.noreply.github.com" \
+      merge --no-ff --no-commit "$upstream_sha"; then
       die "expected reviewed conflict $EXPECTED_CONFLICT was not produced; inventory review is required"
     fi
     [[ -f "$worktree/.git/MERGE_HEAD" || -f "$(git -C "$worktree" rev-parse --git-path MERGE_HEAD)" ]] ||

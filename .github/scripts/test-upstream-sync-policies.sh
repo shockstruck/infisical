@@ -141,7 +141,14 @@ run_prepare() {
 
   (
     cd "$repo"
-    ALLOW_LOCAL_FIXTURE_URL=1 \
+    env \
+      -u GIT_AUTHOR_NAME \
+      -u GIT_AUTHOR_EMAIL \
+      -u GIT_COMMITTER_NAME \
+      -u GIT_COMMITTER_EMAIL \
+      GIT_CONFIG_GLOBAL=/dev/null \
+      GIT_CONFIG_NOSYSTEM=1 \
+      ALLOW_LOCAL_FIXTURE_URL=1 \
       UPSTREAM_URL="$ROOT/upstream.git" \
       UPSTREAM_TAG="$tag" \
       EXPECTED_UPSTREAM_SHA="$upstream_sha" \
