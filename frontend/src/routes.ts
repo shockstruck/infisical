@@ -396,7 +396,7 @@ const secretScanningRoutes = route("/organizations/$orgId/projects/secret-scanni
 
 const pamRoutes = route("/organizations/$orgId/pam", [
   layout("pam-layout", "pam/layout.tsx", [
-    route("/access", [index("pam/PamAccessPage/route.tsx")]),
+    route("/access", [index("redirects/pam-org-access-redirect.tsx")]),
     route("/accounts", "pam/PamAccountsPage/route.tsx"),
     route("/templates", "pam/PamTemplatesPage/route.tsx"),
     route("/discovery", "pam/PamDiscoveryPage/route.tsx"),
@@ -481,6 +481,8 @@ export const routes = rootRoute("root.tsx", [
       route("/admin", "auth/AdminLoginPage/route.tsx"),
       route("/select-organization", "auth/SelectOrgPage/route.tsx"),
       route("/ldap", "auth/LoginLdapPage/route.tsx"),
+      route("/oidc", "auth/LoginOidcPage/route.tsx"),
+      route("/saml", "auth/LoginSamlPage/route.tsx"),
       route("/provider/error", "auth/ProviderErrorPage/route.tsx")
     ]),
     route("/signup", [
@@ -517,6 +519,7 @@ export const routes = rootRoute("root.tsx", [
         "/organization/app-connections/github/manifest/callback",
         "redirects/github-manifest-callback-redirect.tsx"
       ),
+      route("/pam/access", "redirects/pam-access-redirect.tsx"),
       layout("org-layout", "organization/layout.tsx", [
         organizationRoutes,
         route("/organizations/$orgId/secret-manager/$projectId", [

@@ -1,6 +1,7 @@
 import { ProjectType } from "@app/db/schemas";
 import { HoneyTokenType } from "@app/ee/services/honey-token/honey-token-enums";
 import { ScepChallengeType } from "@app/ee/services/pki-scep/challenge";
+import { ScepEnrollmentStatus } from "@app/ee/services/pki-scep/pki-scep-types";
 import {
   TCreateProjectTemplateDTO,
   TUpdateProjectTemplateDTO
@@ -29,6 +30,7 @@ import { SshCertKeyAlgorithm } from "@app/ee/services/ssh-certificate/ssh-certif
 import { SshCertTemplateStatus } from "@app/ee/services/ssh-certificate-template/ssh-certificate-template-types";
 import { TLoginMapping } from "@app/ee/services/ssh-host/ssh-host-types";
 import { SymmetricKeyAlgorithm } from "@app/lib/crypto/cipher";
+import { HmacAlgorithm } from "@app/lib/crypto/hmac";
 import { AsymmetricKeyAlgorithm, SigningAlgorithm } from "@app/lib/crypto/sign/types";
 import { TOrgPermission, TProjectPermission } from "@app/lib/types";
 import { AppConnection } from "@app/services/app-connection/app-connection-enums";
@@ -541,6 +543,8 @@ export enum EventType {
   CMEK_DECRYPT = "cmek-decrypt",
   CMEK_SIGN = "cmek-sign",
   CMEK_VERIFY = "cmek-verify",
+  CMEK_GENERATE_MAC = "cmek-generate-mac",
+  CMEK_VERIFY_MAC = "cmek-verify-mac",
   CMEK_LIST_SIGNING_ALGORITHMS = "cmek-list-signing-algorithms",
   CMEK_GET_PUBLIC_KEY = "cmek-get-public-key",
   CMEK_GET_PRIVATE_KEY = "cmek-get-private-key",
@@ -698,6 +702,7 @@ export enum EventType {
   DASHBOARD_LIST_SECRETS = "dashboard-list-secrets",
   DASHBOARD_GET_SECRET_VALUE = "dashboard-get-secret-value",
   DASHBOARD_GET_SECRET_VERSION_VALUE = "dashboard-get-secret-version-value",
+  SEARCH_SECRETS_BY_METADATA = "search-secrets-by-metadata",
 
   VIEW_INSIGHTS_AUTH_METHODS = "view-insights-auth-methods",
   VIEW_INSIGHTS_SECRETS_MANAGEMENT_CALENDAR = "view-insights-secrets-management-calendar",
@@ -1913,6 +1918,7 @@ interface AddIdentityTlsCertAuthEvent {
     identityId: string;
     allowedCommonNames: string | null | undefined;
     allowedSubjectAltNames: string[] | null | undefined;
+    verifyClientCertificateChain: boolean;
     accessTokenTTL: number;
     accessTokenMaxTTL: number;
     accessTokenNumUsesLimit: number;
@@ -1933,6 +1939,7 @@ interface UpdateIdentityTlsCertAuthEvent {
     identityId: string;
     allowedCommonNames: string | null | undefined;
     allowedSubjectAltNames: string[] | null | undefined;
+    verifyClientCertificateChain?: boolean;
     accessTokenTTL?: number;
     accessTokenMaxTTL?: number;
     accessTokenNumUsesLimit?: number;
@@ -4062,6 +4069,9 @@ interface SetPkiApplicationScepEnrollment {
     applicationId: string;
     profileId: string;
     challengeType: string;
+    signRaWithCa: boolean;
+    validationConnectionId?: string;
+    validationConnectionName?: string;
   };
 }
 
@@ -4341,7 +4351,7 @@ interface CreateCmekEvent {
     keyId: string;
     name: string;
     description?: string;
-    encryptionAlgorithm: SymmetricKeyAlgorithm | AsymmetricKeyAlgorithm;
+    encryptionAlgorithm: SymmetricKeyAlgorithm | AsymmetricKeyAlgorithm | HmacAlgorithm;
     isExportable?: boolean;
   };
 }
@@ -4414,6 +4424,25 @@ interface CmekVerifyEvent {
     signingAlgorithm: SigningAlgorithm;
     signature: string;
     signatureValid: boolean;
+  };
+}
+
+interface CmekGenerateMacEvent {
+  type: EventType.CMEK_GENERATE_MAC;
+  metadata: {
+    keyId: string;
+    macAlgorithm: HmacAlgorithm;
+    mac: string;
+  };
+}
+
+interface CmekVerifyMacEvent {
+  type: EventType.CMEK_VERIFY_MAC;
+  metadata: {
+    keyId: string;
+    macAlgorithm: HmacAlgorithm;
+    mac: string;
+    macValid: boolean;
   };
 }
 
@@ -4776,6 +4805,8 @@ interface CreatePkiSyncEvent {
     name: string;
     destination: string;
     applicationId?: string;
+    connectionId?: string;
+    hasCredentials?: boolean;
   };
 }
 
@@ -5708,6 +5739,17 @@ interface DashboardListSecretsEvent {
     secretPath: string;
     numberOfSecrets: number;
     secretIds: string[];
+  };
+}
+
+interface SearchSecretsByMetadataEvent {
+  type: EventType.SEARCH_SECRETS_BY_METADATA;
+  metadata: {
+    operator: string;
+    filters: { key: string; value: string; operator: string }[];
+    tags?: string[];
+    numberOfSecrets: number;
+    secrets: { id: string; secretKey: string; environment: string; secretPath: string }[];
   };
 }
 
@@ -6942,8 +6984,9 @@ interface CreateProxiedServiceEvent {
     proxiedServiceId: string;
     name: string;
     hostPattern: string;
-    // secret key names only; never placeholder/secret values
+    // secret / dynamic secret names only; never placeholder/secret/lease values
     secretKeys: string[];
+    dynamicSecretNames: string[];
     environment: string;
     secretPath: string;
   };
@@ -6957,6 +7000,7 @@ interface UpdateProxiedServiceEvent {
     hostPattern: string;
     updatedFields: string[];
     secretKeys: string[];
+    dynamicSecretNames: string[];
     environment: string;
     secretPath: string;
   };
@@ -7003,7 +7047,7 @@ interface ScepEnrollmentEvent {
     transactionId: string;
     csrSubject: string;
     challengeType: ScepChallengeType;
-    status: "success" | "pending" | "failure";
+    status: ScepEnrollmentStatus;
     failReason?: string;
     issuedCertificateId?: string;
     issuedSerialNumber?: string;
@@ -7019,7 +7063,7 @@ interface ScepRenewalEvent {
     transactionId: string;
     csrSubject: string;
     existingCertificateSerial?: string;
-    status: "success" | "pending" | "failure";
+    status: ScepEnrollmentStatus;
     failReason?: string;
     issuedCertificateId?: string;
     issuedSerialNumber?: string;
@@ -7730,6 +7774,8 @@ export type Event =
   | CmekDecryptEvent
   | CmekSignEvent
   | CmekVerifyEvent
+  | CmekGenerateMacEvent
+  | CmekVerifyMacEvent
   | CmekListSigningAlgorithmsEvent
   | CmekGetPublicKeyEvent
   | CmekGetPrivateKeyEvent
@@ -7885,6 +7931,7 @@ export type Event =
   | SecretReminderGetEvent
   | SecretReminderDeleteEvent
   | DashboardListSecretsEvent
+  | SearchSecretsByMetadataEvent
   | DashboardGetSecretValueEvent
   | DashboardGetSecretVersionValueEvent
   | ViewSecretManagementInsightsCalendarEvent

@@ -1,9 +1,14 @@
+import pLimit from "p-limit";
+
 import { EventType, TAuditLogServiceFactory } from "@app/ee/services/audit-log/audit-log-types";
 import { TGatewayPoolServiceFactory } from "@app/ee/services/gateway-pool/gateway-pool-service";
 import { TGatewayV2DALFactory } from "@app/ee/services/gateway-v2/gateway-v2-dal";
 import { TGatewayV2ServiceFactory } from "@app/ee/services/gateway-v2/gateway-v2-service";
 import { TPermissionServiceFactory } from "@app/ee/services/permission/permission-service-types";
 import { ResourcePermissionPamResourceActions } from "@app/ee/services/permission/resource-permission";
+import { createSshCert, createSshKeyPair } from "@app/ee/services/ssh/ssh-certificate-authority-fns";
+import { SshCertType } from "@app/ee/services/ssh/ssh-certificate-authority-types";
+import { SshCertKeyAlgorithm } from "@app/ee/services/ssh-certificate/ssh-certificate-types";
 import { getConfig } from "@app/lib/config/env";
 import { CronJobName, TCronJobFactory } from "@app/lib/cron/cron-job";
 import { DatabaseErrorCode } from "@app/lib/error-codes";
@@ -14,11 +19,12 @@ import { ActorType } from "@app/services/auth/auth-type";
 import { TKmsServiceFactory } from "@app/services/kms/kms-service";
 import { KmsDataKey } from "@app/services/kms/kms-types";
 
-import { PamAccountType, PamProductRole } from "../pam/pam-enums";
+import { PamAccountType, PamProductRole, PamSshAuthMethod } from "../pam/pam-enums";
 import { checkAccountAccess, TActorContext, verifyProductMembership } from "../pam/pam-permission";
 import { validateGatewayAttachment } from "../pam/pam-validators";
 import { TPamAccountDALFactory } from "../pam-account/pam-account-dal";
 import { TPamAccountServiceFactory } from "../pam-account/pam-account-service";
+import { TPamAccountDependencyDALFactory } from "./pam-account-dependency-dal";
 import { TPamDiscoveredAccountDALFactory } from "./pam-discovered-account-dal";
 import {
   PamDiscoveryImportStatus,
@@ -40,6 +46,7 @@ import {
   TDeleteDiscoverySourceDTO,
   TGetDiscoverySourceDTO,
   TImportDiscoveredDTO,
+  TListAccountDependenciesDTO,
   TListDiscoveredDTO,
   TListDiscoverySourcesDTO,
   TListRunsDTO,
@@ -51,6 +58,7 @@ type TPamDiscoverySourceServiceFactoryDep = {
   pamDiscoverySourceDAL: TPamDiscoverySourceDALFactory;
   pamDiscoverySourceRunDAL: TPamDiscoverySourceRunDALFactory;
   pamDiscoveredAccountDAL: TPamDiscoveredAccountDALFactory;
+  pamAccountDependencyDAL: TPamAccountDependencyDALFactory;
   pamAccountDAL: Pick<TPamAccountDALFactory, "findById" | "findByIdWithDetails">;
   pamAccountService: Pick<TPamAccountServiceFactory, "create">;
   permissionService: Pick<
@@ -69,6 +77,33 @@ type TPamDiscoverySourceServiceFactoryDep = {
   auditLogService: Pick<TAuditLogServiceFactory, "createAuditLog">;
 };
 
+// hard ceiling on how long a single scan may run
+const MAX_SCAN_DURATION_MS = 45 * 60 * 1000;
+
+// bound concurrent discovered-account upserts so a large result set can't exhaust the DB connection pool
+const DISCOVERED_UPSERT_CONCURRENCY = 8;
+
+const withScanTimeout = async <T>(scan: Promise<T>, controller: AbortController, timeoutMs: number): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(
+        new BadRequestError({
+          message: `Scan exceeded the maximum duration of ${Math.round(timeoutMs / 60000)} minutes`
+        })
+      );
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([scan, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    // wait for the aborted scan to actually stop before finalizing the run
+    await scan.catch(() => {});
+  }
+};
+
 export type TPamDiscoverySourceServiceFactory = ReturnType<typeof pamDiscoverySourceServiceFactory>;
 
 export const pamDiscoverySourceServiceFactory = (deps: TPamDiscoverySourceServiceFactoryDep) => {
@@ -76,6 +111,7 @@ export const pamDiscoverySourceServiceFactory = (deps: TPamDiscoverySourceServic
     pamDiscoverySourceDAL,
     pamDiscoverySourceRunDAL,
     pamDiscoveredAccountDAL,
+    pamAccountDependencyDAL,
     pamAccountDAL,
     pamAccountService,
     permissionService,
@@ -101,11 +137,68 @@ export const pamDiscoverySourceServiceFactory = (deps: TPamDiscoverySourceServic
   const decryptToObject = (blob: Buffer, decryptor: (i: { cipherTextBlob: Buffer }) => Buffer) =>
     JSON.parse(decryptor({ cipherTextBlob: blob }).toString("utf-8")) as Record<string, unknown>;
 
+  // one cert is minted per scan and reused for every host, so it must outlive the whole run
+  const SSH_CERT_TTL = "1h";
+
+  // certificate accounts can't be presented by an ssh client, so sign an ephemeral user cert the gateway will present;
+  // password/private-key accounts pass through unchanged
+  const buildGatewaySshCredentials = async (
+    account: {
+      accountType: string;
+      encryptedCredentials: Buffer;
+      encryptedInternalMetadata?: Buffer | null;
+      id: string;
+    },
+    decryptor: (i: { cipherTextBlob: Buffer }) => Buffer
+  ): Promise<Record<string, unknown>> => {
+    const credentials = decryptToObject(account.encryptedCredentials, decryptor) as {
+      authMethod: string;
+      username: string;
+      privateKey?: string;
+      certificate?: string;
+    };
+
+    if (
+      account.accountType === PamAccountType.SSH &&
+      credentials.authMethod === PamSshAuthMethod.Certificate &&
+      account.encryptedInternalMetadata
+    ) {
+      const metadata = decryptToObject(account.encryptedInternalMetadata, decryptor) as {
+        caPrivateKey?: string;
+        caKeyAlgorithm?: string;
+      };
+      if (metadata.caPrivateKey) {
+        const keyAlgorithm = (metadata.caKeyAlgorithm as SshCertKeyAlgorithm) || SshCertKeyAlgorithm.ED25519;
+        const { publicKey, privateKey } = await createSshKeyPair(keyAlgorithm);
+        const { signedPublicKey } = await createSshCert({
+          caPrivateKey: metadata.caPrivateKey,
+          clientPublicKey: publicKey,
+          keyId: `pam-discovery-${account.id}`,
+          principals: [credentials.username],
+          requestedTtl: SSH_CERT_TTL,
+          certType: SshCertType.USER
+        });
+        credentials.privateKey = privateKey;
+        credentials.certificate = signedPublicKey;
+      }
+    }
+
+    return credentials as Record<string, unknown>;
+  };
+
   const verifyAdmin = async (projectId: string, ctx: TActorContext) => {
     const { hasRole } = await verifyProductMembership(permissionService, projectId, ctx);
     if (!hasRole(PamProductRole.Admin)) {
       throw new ForbiddenRequestError({ message: "Discovery requires the PAM product Admin role" });
     }
+  };
+
+  // unix sources scan with several ssh accounts, stored in the per-type configuration; other types use the single column
+  const getCredentialAccountIds = (credentialAccountId: string, configuration: Record<string, unknown>) => {
+    const configIds = Array.isArray(configuration.credentialAccountIds)
+      ? (configuration.credentialAccountIds as string[])
+      : [];
+    return Array.from(new Set([credentialAccountId, ...configIds]));
   };
 
   const resolveCredentialAccount = async (
@@ -130,6 +223,24 @@ export const pamDiscoverySourceServiceFactory = (deps: TPamDiscoverySourceServic
     if (account.accountType !== expectedType) {
       throw new BadRequestError({ message: `Credential account must be of type '${expectedType}'` });
     }
+
+    // discovery transmits an SSH password to every scanned host, so a password account may only be used by an actor
+    // allowed to view its secret
+    if (account.accountType === PamAccountType.SSH) {
+      const { decryptor } = await getProjectCipher(projectId);
+      const { authMethod } = decryptToObject(account.encryptedCredentials, decryptor) as { authMethod?: string };
+      if (authMethod === PamSshAuthMethod.Password) {
+        await checkAccountAccess(
+          permissionService,
+          credentialAccountId,
+          account.folderId,
+          projectId,
+          ResourcePermissionPamResourceActions.ViewCredentials,
+          ctx
+        );
+      }
+    }
+
     return account;
   };
 
@@ -212,9 +323,13 @@ export const pamDiscoverySourceServiceFactory = (deps: TPamDiscoverySourceServic
       throw new BadRequestError({ message: "A gateway or gateway pool is required" });
     }
     await validateGatewayAttachment(deps, gatewayId, gatewayPoolId, ctx);
-    await resolveCredentialAccount(projectId, discoveryType, credentialAccountId, ctx);
 
     const discoveryConfiguration = validateDiscoveryConfiguration(discoveryType, configuration);
+    await Promise.all(
+      getCredentialAccountIds(credentialAccountId, discoveryConfiguration).map((id) =>
+        resolveCredentialAccount(projectId, discoveryType, id, ctx)
+      )
+    );
 
     try {
       return await pamDiscoverySourceDAL.create({
@@ -253,8 +368,17 @@ export const pamDiscoverySourceServiceFactory = (deps: TPamDiscoverySourceServic
     if (gatewayId !== undefined || gatewayPoolId !== undefined) {
       await validateGatewayAttachment(deps, gatewayId, gatewayPoolId, ctx);
     }
-    if (credentialAccountId) {
-      await resolveCredentialAccount(projectId, discoveryType, credentialAccountId, ctx);
+
+    const discoveryConfiguration =
+      configuration !== undefined
+        ? validateDiscoveryConfiguration(discoveryType, configuration)
+        : ((source.discoveryConfiguration as Record<string, unknown>) ?? {});
+    if (credentialAccountId !== undefined || configuration !== undefined) {
+      await Promise.all(
+        getCredentialAccountIds(credentialAccountId ?? source.credentialAccountId, discoveryConfiguration).map((id) =>
+          resolveCredentialAccount(projectId, discoveryType, id, ctx)
+        )
+      );
     }
 
     const updateData: Record<string, unknown> = {};
@@ -263,8 +387,7 @@ export const pamDiscoverySourceServiceFactory = (deps: TPamDiscoverySourceServic
     if (gatewayId !== undefined) updateData.gatewayId = gatewayId;
     if (gatewayPoolId !== undefined) updateData.gatewayPoolId = gatewayPoolId;
     if (schedule !== undefined) updateData.schedule = schedule;
-    if (configuration !== undefined)
-      updateData.discoveryConfiguration = validateDiscoveryConfiguration(discoveryType, configuration);
+    if (configuration !== undefined) updateData.discoveryConfiguration = discoveryConfiguration;
 
     try {
       return await pamDiscoverySourceDAL.updateById(sourceId, updateData);
@@ -294,8 +417,24 @@ export const pamDiscoverySourceServiceFactory = (deps: TPamDiscoverySourceServic
     });
 
     try {
-      const credentialAccount = await pamAccountDAL.findByIdWithDetails(source.credentialAccountId);
-      if (!credentialAccount) throw new BadRequestError({ message: "Credential account no longer exists" });
+      const configuration = (source.discoveryConfiguration as Record<string, unknown>) ?? {};
+      const { encryptor, decryptor } = await getProjectCipher(source.projectId);
+
+      const resolvedAccounts = await Promise.all(
+        getCredentialAccountIds(source.credentialAccountId, configuration).map((id) =>
+          pamAccountDAL.findByIdWithDetails(id)
+        )
+      );
+      const credentialAccounts = await Promise.all(
+        resolvedAccounts
+          .filter((account): account is NonNullable<typeof account> => Boolean(account))
+          .map(async (account) => ({
+            accountType: account.accountType as PamAccountType,
+            connectionDetails: decryptToObject(account.encryptedConnectionDetails, decryptor),
+            credentials: await buildGatewaySshCredentials(account, decryptor)
+          }))
+      );
+      if (!credentialAccounts.length) throw new BadRequestError({ message: "No credential accounts available" });
 
       const gatewayId = await gatewayPoolService.resolveEffectiveGatewayId({
         gatewayId: source.gatewayId,
@@ -303,35 +442,90 @@ export const pamDiscoverySourceServiceFactory = (deps: TPamDiscoverySourceServic
       });
       if (!gatewayId) throw new BadRequestError({ message: "No healthy gateway available for this source" });
 
-      const { encryptor, decryptor } = await getProjectCipher(source.projectId);
       const provider = PAM_DISCOVERY_FACTORY_MAP[source.discoveryType as PamDiscoveryType]({
         projectId: source.projectId,
         gatewayId,
-        configuration: (source.discoveryConfiguration as Record<string, unknown>) ?? {},
-        credentialAccount: {
-          accountType: credentialAccount.accountType as PamAccountType,
-          connectionDetails: decryptToObject(credentialAccount.encryptedConnectionDetails, decryptor),
-          credentials: decryptToObject(credentialAccount.encryptedCredentials, decryptor)
-        },
+        configuration,
+        credentialAccounts,
         gatewayV2Service
       });
 
-      const { accounts, machineErrors } = await provider.scan();
+      const controller = new AbortController();
+      const { accounts, machineErrors, dependencies, scannedDependencyMachines } = await withScanTimeout(
+        provider.scan(controller.signal),
+        controller,
+        MAX_SCAN_DURATION_MS
+      );
+      const upsertLimit = pLimit(DISCOVERED_UPSERT_CONCURRENCY);
       const results = await Promise.all(
         accounts.map((d) =>
-          pamDiscoveredAccountDAL.upsertByFingerprint(sourceId, d.fingerprint, {
-            accountType: d.accountType,
-            name: d.name,
-            encryptedDetails: encryptor({ plainText: Buffer.from(JSON.stringify(d.details)) }).cipherTextBlob
-          })
+          upsertLimit(() =>
+            pamDiscoveredAccountDAL.upsertByFingerprint(sourceId, d.fingerprint, {
+              accountType: d.accountType,
+              name: d.name,
+              encryptedDetails: encryptor({ plainText: Buffer.from(JSON.stringify(d.details)) }).cipherTextBlob
+            })
+          )
         )
       );
+
+      // Persist dependencies from the sweep, anchoring each to its run-as account by fingerprint. null =
+      // dependency discovery did not run this scan, so the summary omits the dependencies clause.
+      let dependencyCount: number | null = null;
+      let newDependencyCount: number | null = null;
+      if (scannedDependencyMachines.length) {
+        const sourceAccounts = await pamDiscoveredAccountDAL.findFingerprintLinks(sourceId);
+        const accountByFingerprint = new Map(
+          sourceAccounts.map((a) => [
+            a.fingerprint,
+            { discoveredAccountId: a.id, importedAccountId: a.importedAccountId ?? null }
+          ])
+        );
+
+        const depLimit = pLimit(DISCOVERED_UPSERT_CONCURRENCY);
+        const depResults = (
+          await Promise.all(
+            dependencies.map((dep) => {
+              const match = accountByFingerprint.get(dep.fingerprint);
+              if (!match) return Promise.resolve(null); // run-as isn't an account this source discovered
+              const accountId = match.importedAccountId;
+              return depLimit(() =>
+                pamAccountDependencyDAL.upsertByIdentity({
+                  projectId: source.projectId,
+                  fingerprint: dep.fingerprint,
+                  machine: dep.machine,
+                  type: dep.type,
+                  name: dep.name,
+                  data: dep.data,
+                  accountId,
+                  discoveredAccountId: accountId ? null : match.discoveredAccountId
+                })
+              );
+            })
+          )
+        ).filter((r): r is { id: string; isNew: boolean } => Boolean(r));
+
+        // Count only anchored dependencies (those matching an account this source knows); un-anchored run-as
+        // values aren't persisted or shown, so counting them would inflate the "found" number.
+        dependencyCount = depResults.length;
+        newDependencyCount = depResults.filter((r) => r.isNew).length;
+
+        await pamAccountDependencyDAL.deleteStaleForSource({
+          projectId: source.projectId,
+          accountIds: sourceAccounts.map((a) => a.importedAccountId).filter((v): v is string => Boolean(v)),
+          discoveredAccountIds: sourceAccounts.map((a) => a.id),
+          scannedMachines: scannedDependencyMachines,
+          keepIds: depResults.map((r) => r.id)
+        });
+      }
 
       const newCount = results.filter((r) => r.isNew).length;
       await pamDiscoverySourceRunDAL.updateById(run.id, {
         status: PamDiscoveryRunStatus.Completed,
         discoveredCount: accounts.length,
         newCount,
+        dependencyCount,
+        newDependencyCount,
         machineErrors: machineErrors.length ? JSON.stringify(machineErrors) : null,
         completedAt: new Date()
       });
@@ -417,16 +611,65 @@ export const pamDiscoverySourceServiceFactory = (deps: TPamDiscoverySourceServic
       throw new NotFoundError({ message: `Discovery source with ID '${sourceId}' not found` });
     }
     const { accounts, totalCount } = await pamDiscoveredAccountDAL.listStaged(sourceId, { search, offset, limit });
+
+    const dependencies = await pamAccountDependencyDAL.findByDiscoveredAccountIds(accounts.map((a) => a.id));
+    const dependenciesByAccount = new Map<string, { id: string; type: string; name: string; machine: string }[]>();
+    for (const dep of dependencies) {
+      if (dep.discoveredAccountId) {
+        const depList = dependenciesByAccount.get(dep.discoveredAccountId) ?? [];
+        depList.push({ id: dep.id, type: dep.type, name: dep.name, machine: dep.machine });
+        dependenciesByAccount.set(dep.discoveredAccountId, depList);
+      }
+    }
+
     return {
-      discoveredAccounts: accounts.map((a) => ({
-        id: a.id,
-        accountType: a.accountType as PamAccountType,
-        name: a.name,
-        fingerprint: a.fingerprint,
-        createdAt: a.createdAt
-      })),
+      discoveredAccounts: accounts.map((a) => {
+        const accountDependencies = dependenciesByAccount.get(a.id) ?? [];
+        return {
+          id: a.id,
+          accountType: a.accountType as PamAccountType,
+          name: a.name,
+          fingerprint: a.fingerprint,
+          createdAt: a.createdAt,
+          dependencyCount: accountDependencies.length,
+          dependencies: accountDependencies
+        };
+      }),
       totalCount
     };
+  };
+
+  const listAccountDependencies = async ({ accountId, projectId, ...ctx }: TListAccountDependenciesDTO) => {
+    const account = await pamAccountDAL.findByIdWithDetails(accountId);
+    if (!account || account.projectId !== projectId) {
+      throw new NotFoundError({ message: `Account with ID '${accountId}' not found` });
+    }
+    await checkAccountAccess(
+      permissionService,
+      accountId,
+      account.folderId,
+      projectId,
+      ResourcePermissionPamResourceActions.ReadAccounts,
+      ctx
+    );
+
+    const dependencies = await pamAccountDependencyDAL.findByAccountId(accountId);
+    const needsDecrypt = dependencies.some((d) => d.rotationStatus === "failed" && d.encryptedLastRotationMessage);
+    const decryptor = needsDecrypt ? (await getProjectCipher(projectId)).decryptor : null;
+
+    return dependencies.map((d) => ({
+      id: d.id,
+      type: d.type,
+      name: d.name,
+      machine: d.machine,
+      data: d.data,
+      rotationStatus: d.rotationStatus ?? null,
+      lastRotatedAt: d.lastRotatedAt ?? null,
+      lastRotationMessage:
+        d.rotationStatus === "failed" && d.encryptedLastRotationMessage && decryptor
+          ? decryptor({ cipherTextBlob: d.encryptedLastRotationMessage }).toString("utf-8")
+          : null
+    }));
   };
 
   const importAccounts = async ({ projectId, sourceId, folderId, accounts, ...ctx }: TImportDiscoveredDTO) => {
@@ -445,7 +688,17 @@ export const pamDiscoverySourceServiceFactory = (deps: TPamDiscoverySourceServic
           if (!discovered || discovered.discoverySourceId !== sourceId) {
             throw new NotFoundError({ message: "Discovered account not found" });
           }
-          if (discovered.importedAccountId) throw new BadRequestError({ message: "Already imported" });
+          if (discovered.importedAccountId) {
+            // Already imported. Re-run the idempotent backfill so a retry heals a prior import whose backfill
+            // didn't complete (the three writes aren't one transaction), rather than stranding still-staged deps.
+            await pamAccountDependencyDAL.backfillImported(discovered.id, discovered.importedAccountId);
+            return {
+              discoveredAccountId: item.discoveredAccountId,
+              status: PamDiscoveryImportStatus.Imported,
+              accountId: discovered.importedAccountId,
+              name: item.name ?? discovered.name
+            };
+          }
 
           const details = decryptToObject(discovered.encryptedDetails, decryptor) as {
             connectionDetails: Record<string, unknown>;
@@ -460,10 +713,15 @@ export const pamDiscoverySourceServiceFactory = (deps: TPamDiscoverySourceServic
             templateId: item.templateId,
             connectionDetails: details.connectionDetails,
             credentials: details.credentials,
+            // the scan already reached these accounts; skip the per-account connection test
+            skipConnectionTest: true,
             ...ctx
           });
 
           await pamDiscoveredAccountDAL.updateById(discovered.id, { importedAccountId: account.id });
+          // Flip this account's staged dependencies onto the managed account so they're rotation-eligible
+          // immediately, without waiting for the next scan.
+          await pamAccountDependencyDAL.backfillImported(discovered.id, account.id);
           return {
             discoveredAccountId: item.discoveredAccountId,
             status: PamDiscoveryImportStatus.Imported,
@@ -520,6 +778,7 @@ export const pamDiscoverySourceServiceFactory = (deps: TPamDiscoverySourceServic
     runScan,
     listRuns,
     listDiscovered,
-    importAccounts
+    importAccounts,
+    listAccountDependencies
   };
 };

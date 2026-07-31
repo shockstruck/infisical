@@ -2,7 +2,6 @@ import { TAuditLogDALFactory } from "@app/ee/services/audit-log/audit-log-dal";
 import { TAuditLogServiceFactory } from "@app/ee/services/audit-log/audit-log-types";
 import { TScepTransactionDALFactory } from "@app/ee/services/pki-scep/pki-scep-transaction-dal";
 import { TScimServiceFactory } from "@app/ee/services/scim/scim-types";
-import { TSnapshotDALFactory } from "@app/ee/services/secret-snapshot/snapshot-dal";
 import { TKeyValueStoreDALFactory } from "@app/keystore/key-value-store-dal";
 import { getConfig } from "@app/lib/config/env";
 import { CronJobName, TCronJobFactory } from "@app/lib/cron/cron-job";
@@ -28,9 +27,8 @@ type TDailyResourceCleanUpQueueServiceFactoryDep = {
   identityAccessTokenRevocationDAL: Pick<TIdentityAccessTokenRevocationDALFactory, "removeExpiredRevocations">;
   identityUniversalAuthClientSecretDAL: Pick<TIdentityUaClientSecretDALFactory, "removeExpiredClientSecrets">;
   secretVersionDAL: Pick<TSecretVersionDALFactory, "pruneExcessVersions">;
-  secretVersionV2DAL: Pick<TSecretVersionV2DALFactory, "pruneExcessVersions">;
+  secretVersionV2DAL: Pick<TSecretVersionV2DALFactory, "pruneExcessVersions" | "pruneOrphanedVersions">;
   secretFolderVersionDAL: Pick<TSecretFolderVersionDALFactory, "pruneExcessVersions">;
-  snapshotDAL: Pick<TSnapshotDALFactory, "pruneExcessSnapshots">;
   secretSharingDAL: Pick<TSecretSharingDALFactory, "pruneExpiredSharedSecrets" | "pruneExpiredSecretRequests">;
   serviceTokenService: Pick<TServiceTokenServiceFactory, "notifyExpiringTokens">;
   cronJob: TCronJobFactory;
@@ -50,7 +48,6 @@ export const dailyResourceCleanUpQueueServiceFactory = ({
   auditLogDAL,
   auditLogService,
   cronJob,
-  snapshotDAL,
   secretVersionDAL,
   secretFolderVersionDAL,
   secretSharingDAL,
@@ -81,6 +78,7 @@ export const dailyResourceCleanUpQueueServiceFactory = ({
     const lightCleanupTimeoutMs = devMode ? 5 * 60_000 : 15 * 60_000;
     const dailyNotificationTimeoutMs = devMode ? 5 * 60_000 : 15 * 60_000;
     const frequentCleanupTimeoutMs = devMode ? 5 * 60_000 : 10 * 60_000;
+    const isClickHouseAuditLogEnabled = appCfg.isClickHouseConfigured && appCfg.CLICKHOUSE_AUDIT_LOG_ENABLED;
 
     cronJob.register({
       name: CronJobName.DailyResourceCleanup,
@@ -110,22 +108,10 @@ export const dailyResourceCleanUpQueueServiceFactory = ({
       enabled: !appCfg.isSecondaryInstance,
       handler: async () => {
         logger.info(`cron[${CronJobName.DailySecretVersionCleanup}]: task started`);
+        await secretVersionV2DAL.pruneOrphanedVersions();
         await secretVersionDAL.pruneExcessVersions();
         await secretVersionV2DAL.pruneExcessVersions();
         await secretFolderVersionDAL.pruneExcessVersions();
-      }
-    });
-
-    cronJob.register({
-      name: CronJobName.DailySnapshotCleanup,
-      pattern: devMode ? "*/5 * * * *" : "30 2 * * *",
-      runHashTtlS: 3 * 24 * 60 * 60,
-      handlerTimeoutMs: heavyCleanupTimeoutMs,
-      leaseDurationMs: heavyCleanupTimeoutMs,
-      enabled: !appCfg.isSecondaryInstance,
-      handler: async () => {
-        logger.info(`cron[${CronJobName.DailySnapshotCleanup}]: task started`);
-        await snapshotDAL.pruneExcessSnapshots();
       }
     });
 
@@ -135,7 +121,7 @@ export const dailyResourceCleanUpQueueServiceFactory = ({
       runHashTtlS: 3 * 24 * 60 * 60,
       handlerTimeoutMs: heavyCleanupTimeoutMs,
       leaseDurationMs: heavyCleanupTimeoutMs,
-      enabled: !appCfg.isSecondaryInstance,
+      enabled: !appCfg.isSecondaryInstance && !isClickHouseAuditLogEnabled,
       handler: async () => {
         logger.info(`cron[${CronJobName.DailyAuditLogCleanup}]: task started`);
         await auditLogDAL.pruneAuditLog();

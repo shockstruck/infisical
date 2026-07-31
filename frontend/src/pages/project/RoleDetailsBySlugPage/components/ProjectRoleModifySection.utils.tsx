@@ -80,7 +80,8 @@ const ProxiedServicePolicyActionSchema = z.object({
   [ProjectPermissionProxiedServiceActions.Create]: z.boolean().optional(),
   [ProjectPermissionProxiedServiceActions.Edit]: z.boolean().optional(),
   [ProjectPermissionProxiedServiceActions.Delete]: z.boolean().optional(),
-  [ProjectPermissionProxiedServiceActions.Proxy]: z.boolean().optional()
+  [ProjectPermissionProxiedServiceActions.Proxy]: z.boolean().optional(),
+  [ProjectPermissionProxiedServiceActions.ReportUsage]: z.boolean().optional()
 });
 
 const CertificatePolicyActionSchema = z.object({
@@ -127,6 +128,8 @@ const CmekPolicyActionSchema = z.object({
   [ProjectPermissionCmekActions.Decrypt]: z.boolean().optional(),
   [ProjectPermissionCmekActions.Sign]: z.boolean().optional(),
   [ProjectPermissionCmekActions.Verify]: z.boolean().optional(),
+  [ProjectPermissionCmekActions.GenerateMac]: z.boolean().optional(),
+  [ProjectPermissionCmekActions.VerifyMac]: z.boolean().optional(),
   [ProjectPermissionCmekActions.Rotate]: z.boolean().optional(),
   [ProjectPermissionCmekActions.ExportPrivateKey]: z.boolean().optional()
 });
@@ -1439,6 +1442,9 @@ export const rolePermission2Form = (permissions: TProjectPermission[] = []) => {
             [ProjectPermissionProxiedServiceActions.Proxy]: action.includes(
               ProjectPermissionProxiedServiceActions.Proxy
             ),
+            [ProjectPermissionProxiedServiceActions.ReportUsage]: action.includes(
+              ProjectPermissionProxiedServiceActions.ReportUsage
+            ),
             conditions: conditions ? convertCaslConditionToFormOperator(conditions) : [],
             inverted
           });
@@ -1646,6 +1652,8 @@ export const rolePermission2Form = (permissions: TProjectPermission[] = []) => {
       const canDecrypt = action.includes(ProjectPermissionCmekActions.Decrypt);
       const canSign = action.includes(ProjectPermissionCmekActions.Sign);
       const canVerify = action.includes(ProjectPermissionCmekActions.Verify);
+      const canGenerateMac = action.includes(ProjectPermissionCmekActions.GenerateMac);
+      const canVerifyMac = action.includes(ProjectPermissionCmekActions.VerifyMac);
       const canRotate = action.includes(ProjectPermissionCmekActions.Rotate);
       const canExportPrivateKey = action.includes(ProjectPermissionCmekActions.ExportPrivateKey);
 
@@ -1660,6 +1668,8 @@ export const rolePermission2Form = (permissions: TProjectPermission[] = []) => {
       if (canDecrypt) formVal[subject]![0][ProjectPermissionCmekActions.Decrypt] = true;
       if (canSign) formVal[subject]![0][ProjectPermissionCmekActions.Sign] = true;
       if (canVerify) formVal[subject]![0][ProjectPermissionCmekActions.Verify] = true;
+      if (canGenerateMac) formVal[subject]![0][ProjectPermissionCmekActions.GenerateMac] = true;
+      if (canVerifyMac) formVal[subject]![0][ProjectPermissionCmekActions.VerifyMac] = true;
       if (canRotate) formVal[subject]![0][ProjectPermissionCmekActions.Rotate] = true;
       if (canExportPrivateKey)
         formVal[subject]![0][ProjectPermissionCmekActions.ExportPrivateKey] = true;
@@ -2215,6 +2225,16 @@ export const PROJECT_PERMISSION_OBJECT: TProjectPermissionObject = {
         description: "Verify signatures using KMS keys"
       },
       {
+        label: "Generate MAC",
+        value: ProjectPermissionCmekActions.GenerateMac,
+        description: "Generate MACs using KMS keys"
+      },
+      {
+        label: "Verify MAC",
+        value: ProjectPermissionCmekActions.VerifyMac,
+        description: "Verify MACs using KMS keys"
+      },
+      {
         label: "Rotate",
         value: ProjectPermissionCmekActions.Rotate,
         description: "Rotate KMS key material"
@@ -2519,6 +2539,11 @@ export const PROJECT_PERMISSION_OBJECT: TProjectPermissionObject = {
         label: "Proxy",
         value: ProjectPermissionProxiedServiceActions.Proxy,
         description: "Route traffic through proxied services (for agent identities)"
+      },
+      {
+        label: "Report Usage",
+        value: ProjectPermissionProxiedServiceActions.ReportUsage,
+        description: "Record last-used timestamps for proxied services (for the agent proxy)"
       }
     ]
   },
@@ -4020,7 +4045,40 @@ export const RoleTemplates: Record<ProjectType, RoleTemplate[]> = {
         subject: ProjectPermissionSub.Webhooks,
         actions: Object.values(ProjectPermissionActions)
       }
-    ])
+    ]),
+    {
+      id: "agent-proxy",
+      name: "Agent Proxy Policies",
+      description: "Reads secret values, mints dynamic secret leases, and reports service usage",
+      permissions: [
+        {
+          subject: ProjectPermissionSub.Secrets,
+          actions: [
+            ProjectPermissionSecretActions.DescribeSecret,
+            ProjectPermissionSecretActions.ReadValue
+          ]
+        },
+        {
+          subject: ProjectPermissionSub.DynamicSecrets,
+          actions: [ProjectPermissionDynamicSecretActions.Lease]
+        },
+        {
+          subject: ProjectPermissionSub.ProxiedServices,
+          actions: [ProjectPermissionProxiedServiceActions.ReportUsage]
+        }
+      ]
+    },
+    {
+      id: "agent",
+      name: "Agent Policies",
+      description: "Routes traffic through proxied services",
+      permissions: [
+        {
+          subject: ProjectPermissionSub.ProxiedServices,
+          actions: [ProjectPermissionProxiedServiceActions.Proxy]
+        }
+      ]
+    }
   ],
   [ProjectType.PAM]: [projectManagerTemplate()],
   [ProjectType.AI]: [projectManagerTemplate()]

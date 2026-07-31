@@ -145,17 +145,20 @@
                       "integrations/app-connections/hasura-cloud",
                       "integrations/app-connections/heroku",
                       "integrations/app-connections/humanitec",
+                      "integrations/app-connections/kemp-loadmaster",
                       "integrations/app-connections/external-infisical",
                       "integrations/app-connections/laravel-forge",
                       "integrations/app-connections/ldap",
                       "integrations/app-connections/litellm",
                       "integrations/app-connections/ssh",
                       "integrations/app-connections/mssql",
+                      "integrations/app-connections/microsoft-intune",
                       "integrations/app-connections/mongodb",
                       "integrations/app-connections/mysql",
                       "integrations/app-connections/netlify",
                       "integrations/app-connections/netscaler",
                       "integrations/app-connections/northflank",
+                      "integrations/app-connections/nutanix-prism-central",
                       "integrations/app-connections/ona",
                       "integrations/app-connections/oci",
                       "integrations/app-connections/octopus-deploy",
@@ -182,6 +185,7 @@
                       "integrations/app-connections/vercel",
                       "integrations/app-connections/windmill",
                       "integrations/app-connections/smb",
+                      "integrations/app-connections/winrm",
                       "integrations/app-connections/zabbix"
                     ]
                   }
@@ -215,6 +219,7 @@
                 "group": "Gateway",
                 "pages": [
                   "documentation/platform/gateways/overview",
+                  "documentation/platform/gateways/network-architecture",
                   "documentation/platform/gateways/gateway-pools",
                   "documentation/platform/gateways/gateway-deployment",
                   {
@@ -349,7 +354,6 @@
                 "pages": [
                   "self-hosting/deployment-options/standalone-infisical",
                   "self-hosting/deployment-options/docker-compose",
-                  "self-hosting/deployment-options/kubernetes-helm",
                   "self-hosting/deployment-options/aws-native",
                   "self-hosting/deployment-options/gcp-native"
                 ]
@@ -362,7 +366,20 @@
                   "self-hosting/deployment-options/linux-upgrade"
                 ]
               },
+              {
+                "group": "Helm Charts",
+                "pages": [
+                  "self-hosting/helm-charts/overview",
+                  "self-hosting/deployment-options/kubernetes-helm",
+                  "self-hosting/helm-charts/secrets-operator",
+                  "self-hosting/helm-charts/gateway",
+                  "self-hosting/helm-charts/pki-issuer",
+                  "self-hosting/helm-charts/csi-provider",
+                  "self-hosting/helm-charts/agent-injector"
+                ]
+              },
               "self-hosting/guides/replication",
+              "self-hosting/guides/hsm-integration",
               "self-hosting/guides/upgrading-infisical",
               "self-hosting/configuration/envars",
               "self-hosting/guides/releases",
@@ -503,7 +520,8 @@
                           "documentation/platform/secret-rotation/mysql-credentials",
                           "documentation/platform/secret-rotation/oracledb-credentials",
                           "documentation/platform/secret-rotation/postgres-credentials",
-                          "documentation/platform/secret-rotation/redis-credentials"
+                          "documentation/platform/secret-rotation/redis-credentials",
+                          "documentation/platform/secret-rotation/snowflake-user-key-pair"
                         ]
                       },
                       {
@@ -522,6 +540,7 @@
                           "documentation/platform/secret-rotation/convex-access-key",
                           "documentation/platform/secret-rotation/databricks-service-principal-secret",
                           "documentation/platform/secret-rotation/datadog-application-key-secret",
+                          "documentation/platform/secret-rotation/datadog-api-key",
                           "documentation/platform/secret-rotation/dbt-service-token",
                           "documentation/platform/secret-rotation/fireworks-api-key",
                           "documentation/platform/secret-rotation/litellm-api-key",
@@ -578,7 +597,8 @@
                           "documentation/platform/dynamic-secrets/gcp-iam",
                           "documentation/platform/dynamic-secrets/github",
                           "documentation/platform/dynamic-secrets/kubernetes",
-                          "documentation/platform/dynamic-secrets/ldap"
+                          "documentation/platform/dynamic-secrets/ldap",
+                          "documentation/platform/dynamic-secrets/tailscale"
                         ]
                       },
                       {
@@ -611,6 +631,9 @@
                       "documentation/platform/agent-proxy/overview",
                       "documentation/platform/agent-proxy/quickstart",
                       "documentation/platform/agent-proxy/proxied-services",
+                      "documentation/platform/agent-proxy/deployment",
+                      "documentation/platform/agent-proxy/connecting-agents",
+                      "documentation/platform/agent-proxy/activity-logs",
                       "documentation/platform/agent-proxy/security"
                     ]
                   }
@@ -652,6 +675,15 @@
                   {
                     "group": "Infrastructure",
                     "pages": [
+                      {
+                        "group": "Docker",
+                        "pages": [
+                          "integrations/platforms/docker-intro",
+                          "integrations/platforms/docker",
+                          "integrations/platforms/docker-pass-envs",
+                          "integrations/platforms/docker-compose"
+                        ]
+                      },
                       "integrations/platforms/ansible",
                       "integrations/platforms/apache-airflow",
                       {
@@ -664,15 +696,6 @@
                         "pages": [
                           "integrations/platforms/infisical-agent",
                           "integrations/platforms/ecs-with-agent"
-                        ]
-                      },
-                      {
-                        "group": "Docker",
-                        "pages": [
-                          "integrations/platforms/docker-intro",
-                          "integrations/platforms/docker",
-                          "integrations/platforms/docker-pass-envs",
-                          "integrations/platforms/docker-compose"
                         ]
                       },
                       "integrations/frameworks/packer",
@@ -876,7 +899,8 @@
                           "documentation/platform/pki/guides/applications/jboss-certbot",
                           "documentation/platform/pki/guides/applications/windows-server-acme",
                           "documentation/platform/pki/guides/applications/gloo-mesh",
-                          "documentation/platform/pki/guides/applications/jamf-pro-scep"
+                          "documentation/platform/pki/guides/applications/jamf-pro-scep",
+                          "documentation/platform/pki/guides/applications/microsoft-intune-scep"
                         ]
                       },
                       {
@@ -934,7 +958,11 @@
                           "documentation/platform/pki/applications/certificate-syncs/chef",
                           "documentation/platform/pki/applications/certificate-syncs/cloudflare-custom-certificate",
                           "documentation/platform/pki/applications/certificate-syncs/f5-big-ip",
-                          "documentation/platform/pki/applications/certificate-syncs/netscaler"
+                          "documentation/platform/pki/applications/certificate-syncs/netscaler",
+                          "documentation/platform/pki/applications/certificate-syncs/kemp-loadmaster",
+                          "documentation/platform/pki/applications/certificate-syncs/linux-server",
+                          "documentation/platform/pki/applications/certificate-syncs/windows-server",
+                          "documentation/platform/pki/applications/certificate-syncs/nutanix-prism-central"
                         ]
                       }
                     ]
@@ -1020,7 +1048,6 @@
                 "group": "Infisical KMS",
                 "pages": [
                   "documentation/platform/kms/overview",
-                  "documentation/platform/kms/hsm-integration",
                   "documentation/platform/kms/kubernetes-encryption",
                   {
                     "group": "KMIP Integration",
@@ -1093,14 +1120,22 @@
                       "documentation/platform/pam/product-reference/credential-rotation/overview",
                       "documentation/platform/pam/product-reference/credential-rotation/postgresql",
                       "documentation/platform/pam/product-reference/credential-rotation/mysql",
-                      "documentation/platform/pam/product-reference/credential-rotation/mssql"
+                      "documentation/platform/pam/product-reference/credential-rotation/mssql",
+                      "documentation/platform/pam/product-reference/credential-rotation/windows"
                     ]
                   },
                   {
                     "group": "Discovery",
                     "pages": [
                       "documentation/platform/pam/discovery/overview",
-                      "documentation/platform/pam/discovery/active-directory"
+                      "documentation/platform/pam/discovery/active-directory",
+                      "documentation/platform/pam/discovery/unix"
+                    ]
+                  },
+                  {
+                    "group": "Dependencies",
+                    "pages": [
+                      "documentation/platform/pam/dependencies/overview"
                     ]
                   },
                   {
@@ -1985,6 +2020,18 @@
                     ]
                   },
                   {
+                    "group": "Nutanix Prism Central",
+                    "pages": [
+                      "api-reference/endpoints/app-connections/nutanix-prism-central/list",
+                      "api-reference/endpoints/app-connections/nutanix-prism-central/available",
+                      "api-reference/endpoints/app-connections/nutanix-prism-central/get-by-id",
+                      "api-reference/endpoints/app-connections/nutanix-prism-central/get-by-name",
+                      "api-reference/endpoints/app-connections/nutanix-prism-central/create",
+                      "api-reference/endpoints/app-connections/nutanix-prism-central/update",
+                      "api-reference/endpoints/app-connections/nutanix-prism-central/delete"
+                    ]
+                  },
+                  {
                     "group": "OCI",
                     "pages": [
                       "api-reference/endpoints/app-connections/oci/list",
@@ -2234,6 +2281,18 @@
                       "api-reference/endpoints/app-connections/smb/create",
                       "api-reference/endpoints/app-connections/smb/update",
                       "api-reference/endpoints/app-connections/smb/delete"
+                    ]
+                  },
+                  {
+                    "group": "Windows (WinRM)",
+                    "pages": [
+                      "api-reference/endpoints/app-connections/winrm/list",
+                      "api-reference/endpoints/app-connections/winrm/available",
+                      "api-reference/endpoints/app-connections/winrm/get-by-id",
+                      "api-reference/endpoints/app-connections/winrm/get-by-name",
+                      "api-reference/endpoints/app-connections/winrm/create",
+                      "api-reference/endpoints/app-connections/winrm/update",
+                      "api-reference/endpoints/app-connections/winrm/delete"
                     ]
                   },
                   {
@@ -2747,6 +2806,19 @@
                       "api-reference/endpoints/secret-rotations/salesforce-oauth-credentials/list",
                       "api-reference/endpoints/secret-rotations/salesforce-oauth-credentials/rotate-secrets",
                       "api-reference/endpoints/secret-rotations/salesforce-oauth-credentials/update"
+                    ]
+                  },
+                  {
+                    "group": "Snowflake User Key Pair",
+                    "pages": [
+                      "api-reference/endpoints/secret-rotations/snowflake-user-key-pair/create",
+                      "api-reference/endpoints/secret-rotations/snowflake-user-key-pair/delete",
+                      "api-reference/endpoints/secret-rotations/snowflake-user-key-pair/get-by-id",
+                      "api-reference/endpoints/secret-rotations/snowflake-user-key-pair/get-by-name",
+                      "api-reference/endpoints/secret-rotations/snowflake-user-key-pair/get-generated-credentials-by-id",
+                      "api-reference/endpoints/secret-rotations/snowflake-user-key-pair/list",
+                      "api-reference/endpoints/secret-rotations/snowflake-user-key-pair/rotate-secrets",
+                      "api-reference/endpoints/secret-rotations/snowflake-user-key-pair/update"
                     ]
                   },
                   {
@@ -3630,6 +3702,41 @@
                           "api-reference/endpoints/pki/syncs/netscaler/sync-certificates",
                           "api-reference/endpoints/pki/syncs/netscaler/remove-certificates"
                         ]
+                      },
+                      {
+                        "group": "Linux Server",
+                        "pages": [
+                          "api-reference/endpoints/pki/syncs/linux-server/list",
+                          "api-reference/endpoints/pki/syncs/linux-server/get-by-id",
+                          "api-reference/endpoints/pki/syncs/linux-server/create",
+                          "api-reference/endpoints/pki/syncs/linux-server/update",
+                          "api-reference/endpoints/pki/syncs/linux-server/delete",
+                          "api-reference/endpoints/pki/syncs/linux-server/sync-certificates",
+                          "api-reference/endpoints/pki/syncs/linux-server/remove-certificates"
+                        ]
+                      },
+                      {
+                        "group": "Windows Server",
+                        "pages": [
+                          "api-reference/endpoints/pki/syncs/windows-server/list",
+                          "api-reference/endpoints/pki/syncs/windows-server/get-by-id",
+                          "api-reference/endpoints/pki/syncs/windows-server/create",
+                          "api-reference/endpoints/pki/syncs/windows-server/update",
+                          "api-reference/endpoints/pki/syncs/windows-server/delete",
+                          "api-reference/endpoints/pki/syncs/windows-server/sync-certificates",
+                          "api-reference/endpoints/pki/syncs/windows-server/remove-certificates"
+                        ]
+                      },
+                      {
+                        "group": "Nutanix Prism Central",
+                        "pages": [
+                          "api-reference/endpoints/pki/syncs/nutanix-prism-central/list",
+                          "api-reference/endpoints/pki/syncs/nutanix-prism-central/get-by-id",
+                          "api-reference/endpoints/pki/syncs/nutanix-prism-central/create",
+                          "api-reference/endpoints/pki/syncs/nutanix-prism-central/update",
+                          "api-reference/endpoints/pki/syncs/nutanix-prism-central/delete",
+                          "api-reference/endpoints/pki/syncs/nutanix-prism-central/sync-certificates"
+                        ]
                       }
                     ]
                   }
@@ -3932,6 +4039,13 @@
                   "api-reference/endpoints/kms/signing/verify",
                   "api-reference/endpoints/kms/signing/signing-algorithms"
                 ]
+              },
+              {
+                "group": "Message Authentication",
+                "pages": [
+                  "api-reference/endpoints/kms/mac/generate-mac",
+                  "api-reference/endpoints/kms/mac/verify-mac"
+                ]
               }
             ]
           },
@@ -4227,6 +4341,10 @@
     }
   },
   "redirects": [
+    {
+      "source": "/documentation/platform/kms/hsm-integration",
+      "destination": "/self-hosting/guides/hsm-integration"
+    },
     {
       "source": "/documentation/guides/introduction",
       "destination": "/documentation/platform/secrets-mgmt/overview"
