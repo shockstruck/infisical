@@ -22,6 +22,16 @@ expect_failure() {
   fi
 }
 
+expect_failure_containing() {
+  local name="$1"
+  local expected="$2"
+  shift 2
+
+  expect_failure "$name" "$@"
+  grep -Fq -- "$expected" "$ROOT/$name.stderr" ||
+    die "$name failed for an unexpected reason"
+}
+
 write_base_tree() {
   mkdir -p backend/src/ee/services/license .github/workflows
   printf 'canonical upstream license\n' > LICENSE
@@ -106,7 +116,25 @@ prepare_fixture() {
   git -C "$ROOT/source" add .
   git -C "$ROOT/source" commit -m upstream >/dev/null
   UPSTREAM_SHA="$(git -C "$ROOT/source" rev-parse HEAD)"
-  git -C "$ROOT/source" tag v0.162.15 "$UPSTREAM_SHA"
+  git -C "$ROOT/source" tag -a v0.162.15 "$UPSTREAM_SHA" -m 'stable release'
+  UPSTREAM_TAG_OBJECT="$(git -C "$ROOT/source" rev-parse refs/tags/v0.162.15)"
+  git -C "$ROOT/source" tag -a v0.162.15-moved "$UPSTREAM_SHA" -m 'moved stable release object'
+  MOVED_TAG_OBJECT="$(git -C "$ROOT/source" rev-parse refs/tags/v0.162.15-moved)"
+  cat > "$ROOT/release-stable.json" <<'EOF'
+[[{"id":16217,"tag_name":"v0.162.17-nightly-20260731","draft":false,"prerelease":false,"html_url":"https://github.com/Infisical/infisical/releases/tag/v0.162.17-nightly-20260731","published_at":"2026-07-31T02:00:00Z"},{"id":16216,"tag_name":"v0.162.16-rc.1","draft":false,"prerelease":true,"html_url":"https://github.com/Infisical/infisical/releases/tag/v0.162.16-rc.1","published_at":"2026-07-31T01:00:00Z"}],[{"id":16215,"tag_name":"v0.162.15","draft":false,"prerelease":false,"html_url":"https://github.com/Infisical/infisical/releases/tag/v0.162.15","published_at":"2026-07-30T00:00:00Z"},{"id":16214,"tag_name":"v0.162.14","draft":false,"prerelease":false,"html_url":"https://github.com/Infisical/infisical/releases/tag/v0.162.14","published_at":"2026-07-29T00:00:00Z"}]]
+EOF
+  cat > "$ROOT/release-prerelease.json" <<'EOF'
+[[{"id":16216,"tag_name":"v0.162.16-rc.1","draft":false,"prerelease":true,"html_url":"https://github.com/Infisical/infisical/releases/tag/v0.162.16-rc.1","published_at":"2026-07-30T00:00:00Z"}]]
+EOF
+  cat > "$ROOT/release-nightly.json" <<'EOF'
+[[{"id":16216,"tag_name":"v0.162.16-nightly-20260730","draft":false,"prerelease":false,"html_url":"https://github.com/Infisical/infisical/releases/tag/v0.162.16-nightly-20260730","published_at":"2026-07-30T00:00:00Z"}]]
+EOF
+  cat > "$ROOT/release-none.json" <<'EOF'
+[[]]
+EOF
+  cat > "$ROOT/release-api-git-mismatch.json" <<'EOF'
+[[{"id":99999,"tag_name":"v0.999.999","draft":false,"prerelease":false,"html_url":"https://github.com/Infisical/infisical/releases/tag/v0.999.999","published_at":"2026-07-30T00:00:00Z"}]]
+EOF
 
   git -C "$ROOT/source" switch -c upstream-conflict "$BASE_SHA" >/dev/null
   printf 'upstream=next\nshared-a\nshared-b\nshared-c\nfork=base\n' > "$ROOT/source/backend/src/ee/services/license/license-fns.ts"
@@ -117,6 +145,9 @@ prepare_fixture() {
   git -C "$ROOT/source" commit -m upstream-conflict >/dev/null
   CONFLICT_SHA="$(git -C "$ROOT/source" rev-parse HEAD)"
   git -C "$ROOT/source" tag v0.162.16 "$CONFLICT_SHA"
+  cat > "$ROOT/release-conflict.json" <<'EOF'
+[[{"id":16216,"tag_name":"v0.162.16","draft":false,"prerelease":false,"html_url":"https://github.com/Infisical/infisical/releases/tag/v0.162.16","published_at":"2026-07-31T00:00:00Z"}]]
+EOF
 
   git init --bare "$ROOT/fork.git" >/dev/null
   git init --bare "$ROOT/upstream.git" >/dev/null
@@ -131,13 +162,14 @@ prepare_fixture() {
 run_prepare() {
   local repo="$1"
   local remote="$2"
-  local tag="$3"
-  local upstream_sha="$4"
-  local fork_sha="$5"
-  local reviewed_base_sha="$6"
-  local stage_a_merge_sha="$7"
-  local stage_a_head_sha="$8"
-  local output_prefix="$9"
+  local release_fixture="$3"
+  local fork_sha="$4"
+  local reviewed_base_sha="$5"
+  local stage_a_merge_sha="$6"
+  local stage_a_head_sha="$7"
+  local output_prefix="$8"
+  local initial_tag_object_fixture="${9:-}"
+  local final_tag_object_fixture="${10:-}"
 
   (
     cd "$repo"
@@ -150,8 +182,9 @@ run_prepare() {
       GIT_CONFIG_NOSYSTEM=1 \
       ALLOW_LOCAL_FIXTURE_URL=1 \
       UPSTREAM_URL="$ROOT/upstream.git" \
-      UPSTREAM_TAG="$tag" \
-      EXPECTED_UPSTREAM_SHA="$upstream_sha" \
+      UPSTREAM_RELEASE_FIXTURE_PATH="$release_fixture" \
+      UPSTREAM_REMOTE_TAG_OBJECT_INITIAL_FIXTURE="$initial_tag_object_fixture" \
+      UPSTREAM_REMOTE_TAG_OBJECT_FINAL_FIXTURE="$final_tag_object_fixture" \
       EXPECTED_FORK_TIP="$fork_sha" \
       EXPECTED_REVIEWED_BASE_TIP="$reviewed_base_sha" \
       EXPECTED_STAGE_A_MERGE="$stage_a_merge_sha" \
@@ -210,10 +243,14 @@ make_tampered_merge() {
 }
 
 test_prepare_policy() {
-  run_prepare "$ROOT/work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" \
+  run_prepare "$ROOT/work" origin "$ROOT/release-stable.json" "$FORK_SHA" \
     "$REVIEWED_BASE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" first
   jq -e '
     .decision == "prepare" and
+    .targetSelection == "latest-published-stable-release" and
+    .upstreamTag == "v0.162.15" and
+    .upstreamReleaseId == "16215" and
+    .upstreamTagObject == $o and
     .upstreamSha == $u and
     .forkTip == $f and
     .reviewedBaseTip == $b and
@@ -221,7 +258,7 @@ test_prepare_policy() {
     (.syntheticMergeTree | test("^[0-9a-f]{40}$")) and
     (.protectedPaths | length) == 7 and
     ([.classifiedBaselineDelta[].path] | sort) == (["LICENSE", "backend/src/ee/LICENSE.md", ".github/workflows/release-fork-ghcr.yml"] | sort)
-  ' --arg u "$UPSTREAM_SHA" --arg f "$FORK_SHA" --arg b "$REVIEWED_BASE_SHA" \
+  ' --arg o "$UPSTREAM_TAG_OBJECT" --arg u "$UPSTREAM_SHA" --arg f "$FORK_SHA" --arg b "$REVIEWED_BASE_SHA" \
     --arg a "$STAGE_A_MERGE_SHA" "$ROOT/first.json" >/dev/null
   if git --git-dir="$ROOT/fork.git" show-ref --verify --quiet refs/heads/sync/upstream-v0.162.15; then
     die "no-push preparation changed the fixture remote"
@@ -230,8 +267,13 @@ test_prepare_policy() {
   VALID_BASELINE="$(git -C "$ROOT/work" rev-parse refs/heads/sync/upstream-v0.162.15)"
   [[ "$(git -C "$ROOT/work" rev-parse "$VALID_BASELINE^1")" == "$FORK_SHA" ]] ||
     die "baseline first parent moved away from immutable F0"
-  git -C "$ROOT/work" push origin refs/heads/sync/upstream-v0.162.15 >/dev/null
-  run_prepare "$ROOT/work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" \
+  git -C "$ROOT/work" push \
+    --force-with-lease=refs/heads/sync/upstream-v0.162.15: \
+    origin refs/heads/sync/upstream-v0.162.15 >/dev/null
+  expect_failure create-only-lease-collision git -C "$ROOT/work" push \
+    --force-with-lease=refs/heads/sync/upstream-v0.162.15: \
+    origin "$FORK_SHA:refs/heads/sync/upstream-v0.162.15"
+  run_prepare "$ROOT/work" origin "$ROOT/release-stable.json" "$FORK_SHA" \
     "$REVIEWED_BASE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" rerun
   jq -e '.decision == "noop"' "$ROOT/rerun.json" >/dev/null
 
@@ -243,7 +285,7 @@ test_prepare_policy() {
   git -C "$ROOT/moved-work" commit -m moved >/dev/null
   git -C "$ROOT/moved-work" push origin HEAD:refs/heads/main >/dev/null
   MOVED_BASE_SHA="$(git -C "$ROOT/moved-work" rev-parse HEAD)"
-  expect_failure moved-target run_prepare "$ROOT/moved-work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" \
+  expect_failure moved-target run_prepare "$ROOT/moved-work" origin "$ROOT/release-stable.json" "$FORK_SHA" \
     "$MOVED_BASE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" moved-target
 
   clone_scenario reverted
@@ -256,29 +298,50 @@ test_prepare_policy() {
   git -C "$ROOT/reverted-work" commit -m reverted-remove >/dev/null
   git -C "$ROOT/reverted-work" push origin HEAD:refs/heads/main >/dev/null
   REVERTED_BASE_SHA="$(git -C "$ROOT/reverted-work" rev-parse HEAD)"
-  expect_failure reverted-history run_prepare "$ROOT/reverted-work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" \
+  expect_failure reverted-history run_prepare "$ROOT/reverted-work" origin "$ROOT/release-stable.json" "$FORK_SHA" \
     "$REVERTED_BASE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" reverted-history
 
   clone_scenario base-mismatch
-  expect_failure reviewed-base-mismatch run_prepare "$ROOT/base-mismatch-work" origin v0.162.15 \
-    "$UPSTREAM_SHA" "$FORK_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" base-mismatch
+  expect_failure reviewed-base-mismatch run_prepare "$ROOT/base-mismatch-work" origin "$ROOT/release-stable.json" \
+    "$FORK_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" base-mismatch
 
   clone_scenario collision
   git -C "$ROOT/collision-work" push origin "$FORK_SHA:refs/heads/sync/upstream-v0.162.15" >/dev/null
-  expect_failure branch-collision run_prepare "$ROOT/collision-work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" \
+  expect_failure branch-collision run_prepare "$ROOT/collision-work" origin "$ROOT/release-stable.json" "$FORK_SHA" \
     "$REVIEWED_BASE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" branch-collision
 
   clone_scenario unexpected
   git --git-dir="$ROOT/unexpected.git" fetch "$ROOT/source" "$FORK_CONFLICT_REVIEWED_SHA" >/dev/null
   git --git-dir="$ROOT/unexpected.git" update-ref refs/heads/main "$FORK_CONFLICT_REVIEWED_SHA"
-  expect_failure unexpected-conflict run_prepare "$ROOT/unexpected-work" origin v0.162.16 "$CONFLICT_SHA" \
+  expect_failure unexpected-conflict run_prepare "$ROOT/unexpected-work" origin "$ROOT/release-conflict.json" \
     "$FORK_CONFLICT_SHA" "$FORK_CONFLICT_REVIEWED_SHA" "$FORK_CONFLICT_STAGE_A_MERGE_SHA" \
     "$FORK_CONFLICT_STAGE_A_HEAD_SHA" unexpected-conflict
 
-  clone_scenario tag-mismatch
-  expect_failure tag-sha-mismatch run_prepare "$ROOT/tag-mismatch-work" origin v0.162.15 \
-    "0000000000000000000000000000000000000000" "$FORK_SHA" "$REVIEWED_BASE_SHA" \
-    "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" tag-mismatch
+  clone_scenario prerelease
+  expect_failure_containing prerelease-selection "no published stable v0.x.y upstream release was found" \
+    run_prepare "$ROOT/prerelease-work" origin "$ROOT/release-prerelease.json" \
+    "$FORK_SHA" "$REVIEWED_BASE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" prerelease
+
+  clone_scenario nightly
+  expect_failure_containing nightly-selection "no published stable v0.x.y upstream release was found" \
+    run_prepare "$ROOT/nightly-work" origin "$ROOT/release-nightly.json" \
+    "$FORK_SHA" "$REVIEWED_BASE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" nightly
+
+  clone_scenario no-stable
+  expect_failure_containing no-stable-release "no published stable v0.x.y upstream release was found" \
+    run_prepare "$ROOT/no-stable-work" origin "$ROOT/release-none.json" \
+    "$FORK_SHA" "$REVIEWED_BASE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" no-stable
+
+  clone_scenario api-git-mismatch
+  expect_failure_containing api-git-mismatch "is absent or ambiguous" \
+    run_prepare "$ROOT/api-git-mismatch-work" origin \
+    "$ROOT/release-api-git-mismatch.json" "$FORK_SHA" "$REVIEWED_BASE_SHA" \
+    "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" api-git-mismatch
+
+  clone_scenario moved-tag
+  expect_failure_containing moved-tag "tag moved during discovery" \
+    run_prepare "$ROOT/moved-tag-work" origin "$ROOT/release-stable.json" \
+    "$FORK_SHA" "$REVIEWED_BASE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" moved-tag "" "$MOVED_TAG_OBJECT"
 
   local scenario
   local mutation
@@ -291,7 +354,7 @@ test_prepare_policy() {
       extra-delta) mutation=extra-delta ;;
     esac
     make_tampered_merge "$ROOT/$scenario-work" "$mutation" refs/heads/sync/upstream-v0.162.15
-    expect_failure "$scenario" run_prepare "$ROOT/$scenario-work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" \
+    expect_failure "$scenario" run_prepare "$ROOT/$scenario-work" origin "$ROOT/release-stable.json" "$FORK_SHA" \
       "$REVIEWED_BASE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" "$scenario"
   done
 
@@ -347,6 +410,8 @@ main() {
   MOVED_BASE_SHA=""
   REVERTED_BASE_SHA=""
   UPSTREAM_SHA=""
+  UPSTREAM_TAG_OBJECT=""
+  MOVED_TAG_OBJECT=""
   CONFLICT_SHA=""
   VALID_BASELINE=""
 
