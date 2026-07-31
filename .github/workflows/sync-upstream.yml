@@ -30,20 +30,17 @@ jobs:
             UPSTREAM_TAG: ${{ inputs.upstream_tag }}
             EXPECTED_UPSTREAM_SHA: ${{ inputs.expected_upstream_sha }}
             EXPECTED_FORK_TIP: 2cc6bffc368cf365d0fcf018945587a94c34c5c8
-            BASE_BRANCH: ${{ vars.UPSTREAM_SYNC_PR_BASE }}
+            BASE_BRANCH: main
             EXPECTED_APP_SLUG: ${{ vars.UPSTREAM_SYNC_APP_SLUG }}
         steps:
             - name: Validate approved repository configuration
               shell: bash
               run: |
                   set -Eeuo pipefail
-                  case "$BASE_BRANCH" in
-                    main|dev) ;;
-                    *)
-                      printf 'UPSTREAM_SYNC_PR_BASE must be approved as exactly main or dev.\n' >&2
-                      exit 1
-                      ;;
-                  esac
+                  [[ "$BASE_BRANCH" == "main" ]] || {
+                    printf 'The approved main-only sync PR base changed unexpectedly.\n' >&2
+                    exit 1
+                  }
                   [[ "$EXPECTED_APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]] || {
                     printf 'UPSTREAM_SYNC_APP_SLUG must identify the approved dedicated GitHub App.\n' >&2
                     exit 1
