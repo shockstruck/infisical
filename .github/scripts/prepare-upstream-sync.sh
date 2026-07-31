@@ -1,0 +1,454 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+readonly DEFAULT_UPSTREAM_URL="https://github.com/Infisical/infisical.git"
+readonly DEFAULT_ORIGIN_REMOTE="origin"
+readonly EXPECTED_CONFLICT="backend/src/ee/services/license/license-types.ts"
+
+readonly LICENSE_PATH="LICENSE"
+readonly EE_LICENSE_PATH="backend/src/ee/LICENSE.md"
+readonly LICENSE_TEST_PATH="backend/src/ee/services/license/license-fns.test.ts"
+readonly LICENSE_FNS_PATH="backend/src/ee/services/license/license-fns.ts"
+readonly LICENSE_SERVICE_PATH="backend/src/ee/services/license/license-service.ts"
+readonly LICENSE_TYPES_PATH="backend/src/ee/services/license/license-types.ts"
+readonly PUBLISH_WORKFLOW_PATH=".github/workflows/release-fork-ghcr.yml"
+
+WORKTREE_TO_REMOVE=""
+BRANCH_TO_DELETE=""
+PREPARE_SUCCEEDED=0
+
+cleanup() {
+  if [[ -n "$WORKTREE_TO_REMOVE" ]]; then
+    git worktree remove --force "$WORKTREE_TO_REMOVE" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$BRANCH_TO_DELETE" && "$PREPARE_SUCCEEDED" != "1" ]]; then
+    git branch -D "$BRANCH_TO_DELETE" >/dev/null 2>&1 || true
+  fi
+}
+
+trap cleanup EXIT
+
+die() {
+  printf 'prepare-upstream-sync: %s\n' "$*" >&2
+  exit 1
+}
+
+log() {
+  printf 'prepare-upstream-sync: %s\n' "$*" >&2
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+require_full_sha() {
+  local name="$1"
+  local value="$2"
+
+  [[ "$value" =~ ^[0-9a-f]{40}$ ]] || die "$name must be a lowercase full 40-character commit SHA"
+}
+
+require_safe_tag() {
+  local tag="$1"
+
+  [[ "$tag" =~ ^v0\.[0-9]+\.[0-9]+([.-][A-Za-z0-9_.-]+)?$ ]] ||
+    die "UPSTREAM_TAG must be an exact v0.x.y stable or prerelease tag without normalization"
+  git check-ref-format "refs/tags/$tag" >/dev/null 2>&1 || die "invalid upstream Git tag: $tag"
+}
+
+blob_at() {
+  local repo="$1"
+  local commit="$2"
+  local path="$3"
+
+  if git -C "$repo" cat-file -e "$commit:$path" 2>/dev/null; then
+    git -C "$repo" rev-parse "$commit:$path"
+  else
+    printf 'absent\n'
+  fi
+}
+
+require_regular_blob() {
+  local repo="$1"
+  local commit="$2"
+  local path="$3"
+  local optional="${4:-false}"
+  local entry
+  local mode
+  local type
+
+  entry="$(git -C "$repo" ls-tree "$commit" -- "$path")"
+  if [[ -z "$entry" ]]; then
+    [[ "$optional" == "true" ]] && return 0
+    die "$path is absent from $commit"
+  fi
+
+  read -r mode type _ <<<"$entry"
+  [[ "$type" == "blob" && ( "$mode" == "100644" || "$mode" == "100755" ) ]] ||
+    die "$path at $commit must be a regular file, not mode=$mode type=$type"
+}
+
+restore_exact_path() {
+  local repo="$1"
+  local source="$2"
+  local path="$3"
+
+  if git -C "$repo" cat-file -e "$source:$path" 2>/dev/null; then
+    require_regular_blob "$repo" "$source" "$path"
+    git -C "$repo" restore --source="$source" --staged --worktree -- "$path"
+  else
+    git -C "$repo" rm -f --ignore-unmatch -- "$path" >/dev/null
+  fi
+}
+
+sorted_unique_lines() {
+  LC_ALL=C sort -u
+}
+
+assert_expected_conflicts() {
+  local repo="$1"
+  local actual
+
+  actual="$(git -C "$repo" diff --name-only --diff-filter=U | sorted_unique_lines)"
+  [[ "$actual" == "$EXPECTED_CONFLICT" ]] || {
+    printf 'Expected conflict set:\n%s\nActual conflict set:\n%s\n' "$EXPECTED_CONFLICT" "${actual:-<empty>}" >&2
+    die "unexpected merge conflict set; inventory review is required"
+  }
+}
+
+assert_path_matches() {
+  local repo="$1"
+  local expected_commit="$2"
+  local actual_commit="$3"
+  local path="$4"
+
+  [[ "$(blob_at "$repo" "$expected_commit" "$path")" == "$(blob_at "$repo" "$actual_commit" "$path")" ]] ||
+    die "$path does not match required source $expected_commit"
+}
+
+assert_baseline_delta() {
+  local repo="$1"
+  local upstream_sha="$2"
+  local baseline_commit="$3"
+  local actual
+  local expected
+
+  expected="$(printf 'D\t%s\nM\t%s\nA\t%s\n' \
+    "$EE_LICENSE_PATH" "$LICENSE_PATH" "$PUBLISH_WORKFLOW_PATH" | sorted_unique_lines)"
+  actual="$(git -C "$repo" diff --name-status "$upstream_sha" "$baseline_commit" | sorted_unique_lines)"
+
+  [[ "$actual" == "$expected" ]] || {
+    printf 'Expected baseline delta:\n%s\nActual baseline delta:\n%s\n' "$expected" "${actual:-<empty>}" >&2
+    die "baseline contains an unclassified delta"
+  }
+}
+
+assert_baseline_commit() {
+  local repo="$1"
+  local baseline_commit="$2"
+  local fork_tip="$3"
+  local upstream_sha="$4"
+  local upstream_tag="$5"
+  local parent_count
+
+  parent_count="$(git -C "$repo" rev-list --parents -n 1 "$baseline_commit" | awk '{print NF - 1}')"
+  [[ "$parent_count" == "2" ]] || die "baseline must be one non-squashed merge commit"
+  [[ "$(git -C "$repo" rev-parse "$baseline_commit^1")" == "$fork_tip" ]] ||
+    die "baseline first parent is not the verified fork tip"
+  [[ "$(git -C "$repo" rev-parse "$baseline_commit^2")" == "$upstream_sha" ]] ||
+    die "baseline second parent is not the verified upstream commit"
+  [[ "$(git -C "$repo" show -s --format=%s "$baseline_commit")" == "merge: sync upstream $upstream_tag" ]] ||
+    die "baseline commit subject is not the generated sync subject"
+  [[ "$(git -C "$repo" show -s --format=%an "$baseline_commit")" == "upstream-sync[bot]" ]] ||
+    die "baseline commit author is not the sync bot"
+  [[ "$(git -C "$repo" show -s --format=%ae "$baseline_commit")" == "upstream-sync[bot]@users.noreply.github.com" ]] ||
+    die "baseline commit author email is not the sync bot"
+
+  assert_path_matches "$repo" "$fork_tip" "$baseline_commit" "$LICENSE_PATH"
+  [[ "$(blob_at "$repo" "$baseline_commit" "$EE_LICENSE_PATH")" == "absent" ]] ||
+    die "$EE_LICENSE_PATH must remain absent"
+  assert_path_matches "$repo" "$upstream_sha" "$baseline_commit" "$LICENSE_TEST_PATH"
+  assert_path_matches "$repo" "$upstream_sha" "$baseline_commit" "$LICENSE_FNS_PATH"
+  assert_path_matches "$repo" "$upstream_sha" "$baseline_commit" "$LICENSE_SERVICE_PATH"
+  assert_path_matches "$repo" "$upstream_sha" "$baseline_commit" "$LICENSE_TYPES_PATH"
+  assert_path_matches "$repo" "$fork_tip" "$baseline_commit" "$PUBLISH_WORKFLOW_PATH"
+  assert_baseline_delta "$repo" "$upstream_sha" "$baseline_commit"
+}
+
+write_manifest() {
+  local repo="$1"
+  local output_path="$2"
+  local upstream_tag="$3"
+  local tag_object="$4"
+  local upstream_sha="$5"
+  local fork_tip="$6"
+  local baseline_commit="$7"
+  local merge_base="$8"
+  local divergence="$9"
+  local decision="${10}"
+  local branch="${11}"
+
+  jq -n \
+    --arg schemaVersion "1" \
+    --arg upstreamTag "$upstream_tag" \
+    --arg upstreamTagObject "$tag_object" \
+    --arg upstreamSha "$upstream_sha" \
+    --arg forkTip "$fork_tip" \
+    --arg baselineCommit "$baseline_commit" \
+    --arg mergeBase "$merge_base" \
+    --arg divergence "$divergence" \
+    --arg branch "$branch" \
+    --arg decision "$decision" \
+    --arg licenseFork "$(blob_at "$repo" "$fork_tip" "$LICENSE_PATH")" \
+    --arg licenseUpstream "$(blob_at "$repo" "$upstream_sha" "$LICENSE_PATH")" \
+    --arg licenseFinal "$(blob_at "$repo" "$baseline_commit" "$LICENSE_PATH")" \
+    --arg eeFork "$(blob_at "$repo" "$fork_tip" "$EE_LICENSE_PATH")" \
+    --arg eeUpstream "$(blob_at "$repo" "$upstream_sha" "$EE_LICENSE_PATH")" \
+    --arg eeFinal "$(blob_at "$repo" "$baseline_commit" "$EE_LICENSE_PATH")" \
+    --arg testFork "$(blob_at "$repo" "$fork_tip" "$LICENSE_TEST_PATH")" \
+    --arg testUpstream "$(blob_at "$repo" "$upstream_sha" "$LICENSE_TEST_PATH")" \
+    --arg testFinal "$(blob_at "$repo" "$baseline_commit" "$LICENSE_TEST_PATH")" \
+    --arg fnsFork "$(blob_at "$repo" "$fork_tip" "$LICENSE_FNS_PATH")" \
+    --arg fnsUpstream "$(blob_at "$repo" "$upstream_sha" "$LICENSE_FNS_PATH")" \
+    --arg fnsFinal "$(blob_at "$repo" "$baseline_commit" "$LICENSE_FNS_PATH")" \
+    --arg serviceFork "$(blob_at "$repo" "$fork_tip" "$LICENSE_SERVICE_PATH")" \
+    --arg serviceUpstream "$(blob_at "$repo" "$upstream_sha" "$LICENSE_SERVICE_PATH")" \
+    --arg serviceFinal "$(blob_at "$repo" "$baseline_commit" "$LICENSE_SERVICE_PATH")" \
+    --arg typesFork "$(blob_at "$repo" "$fork_tip" "$LICENSE_TYPES_PATH")" \
+    --arg typesUpstream "$(blob_at "$repo" "$upstream_sha" "$LICENSE_TYPES_PATH")" \
+    --arg typesFinal "$(blob_at "$repo" "$baseline_commit" "$LICENSE_TYPES_PATH")" \
+    --arg workflowFork "$(blob_at "$repo" "$fork_tip" "$PUBLISH_WORKFLOW_PATH")" \
+    --arg workflowUpstream "$(blob_at "$repo" "$upstream_sha" "$PUBLISH_WORKFLOW_PATH")" \
+    --arg workflowFinal "$(blob_at "$repo" "$baseline_commit" "$PUBLISH_WORKFLOW_PATH")" \
+    '{
+      schemaVersion: ($schemaVersion | tonumber),
+      upstreamTag: $upstreamTag,
+      upstreamTagObject: $upstreamTagObject,
+      upstreamSha: $upstreamSha,
+      forkTip: $forkTip,
+      baselineCommit: $baselineCommit,
+      mergeBase: $mergeBase,
+      divergence: $divergence,
+      branch: $branch,
+      decision: $decision,
+      conflicts: ["backend/src/ee/services/license/license-types.ts"],
+      protectedPaths: [
+        {path: "LICENSE", forkBlob: $licenseFork, upstreamBlob: $licenseUpstream, finalBlob: $licenseFinal, policy: "exact-fork-blob", disposition: "exact-fork-blob", validation: "byte-for-byte blob equality with forkTip"},
+        {path: "backend/src/ee/LICENSE.md", forkBlob: $eeFork, upstreamBlob: $eeUpstream, finalBlob: $eeFinal, policy: "absent", disposition: "absent", validation: "final path is absent"},
+        {path: "backend/src/ee/services/license/license-fns.test.ts", forkBlob: $testFork, upstreamBlob: $testUpstream, finalBlob: $testFinal, policy: "upstream-baseline", disposition: "pending-adaptation", validation: "must be freshly adapted or documented upstream-equivalent before review-ready"},
+        {path: "backend/src/ee/services/license/license-fns.ts", forkBlob: $fnsFork, upstreamBlob: $fnsUpstream, finalBlob: $fnsFinal, policy: "upstream-baseline", disposition: "pending-adaptation", validation: "feature-set tests required"},
+        {path: "backend/src/ee/services/license/license-service.ts", forkBlob: $serviceFork, upstreamBlob: $serviceUpstream, finalBlob: $serviceFinal, policy: "upstream-baseline", disposition: "pending-adaptation", validation: "license initialization-path tests required"},
+        {path: "backend/src/ee/services/license/license-types.ts", forkBlob: $typesFork, upstreamBlob: $typesUpstream, finalBlob: $typesFinal, policy: "upstream-baseline", disposition: "pending-adaptation", validation: "complete schema and typecheck proof required"},
+        {path: ".github/workflows/release-fork-ghcr.yml", forkBlob: $workflowFork, upstreamBlob: $workflowUpstream, finalBlob: $workflowFinal, policy: "fork-publisher", disposition: "pending-hardening", validation: "immutable T/U/F workflow review and fixtures required"}
+      ],
+      classifiedBaselineDelta: [
+        {path: "LICENSE", status: "modified", classification: "licensing-policy"},
+        {path: "backend/src/ee/LICENSE.md", status: "deleted", classification: "licensing-policy"},
+        {path: ".github/workflows/release-fork-ghcr.yml", status: "added", classification: "fork-publisher"}
+      ]
+    }' >"$output_path"
+
+  validate_manifest "$output_path" false
+}
+
+validate_manifest() {
+  local manifest_path="$1"
+  local require_final="${2:-false}"
+
+  jq -e --argjson requireFinal "$require_final" '
+    (.protectedPaths | length) == 7 and
+    ([.protectedPaths[].path] | length == (unique | length)) and
+    ([.protectedPaths[].path] == [
+      "LICENSE",
+      "backend/src/ee/LICENSE.md",
+      "backend/src/ee/services/license/license-fns.test.ts",
+      "backend/src/ee/services/license/license-fns.ts",
+      "backend/src/ee/services/license/license-service.ts",
+      "backend/src/ee/services/license/license-types.ts",
+      ".github/workflows/release-fork-ghcr.yml"
+    ]) and
+    (all(.protectedPaths[]; (.forkBlob | type) == "string" and (.upstreamBlob | type) == "string" and (.finalBlob | type) == "string")) and
+    (if $requireFinal then all(.protectedPaths[]; (.disposition | startswith("pending-") | not)) else true end)
+  ' "$manifest_path" >/dev/null || die "protected-path manifest is incomplete or has unresolved dispositions"
+}
+
+write_pr_body() {
+  local manifest_path="$1"
+  local output_path="$2"
+
+  jq -r '
+    "## Guarded upstream baseline\n\n" +
+    "This draft contains only the mechanically prepared whole-tree merge baseline. It must remain draft until every pending protected-path disposition is resolved and the full validation matrix passes.\n\n" +
+    "| Identity | Value |\n| --- | --- |\n" +
+    "| Upstream tag | `" + .upstreamTag + "` |\n" +
+    "| Upstream tag object | `" + .upstreamTagObject + "` |\n" +
+    "| Upstream commit (U) | `" + .upstreamSha + "` |\n" +
+    "| Verified fork tip (F0) | `" + .forkTip + "` |\n" +
+    "| Merge base | `" + .mergeBase + "` |\n" +
+    "| Divergence (fork/upstream) | `" + .divergence + "` |\n" +
+    "| Baseline merge | `" + .baselineCommit + "` |\n\n" +
+    "### Protected paths\n\n| Path | Fork blob | Upstream blob | Final blob | Disposition | Validation |\n| --- | --- | --- | --- | --- | --- |\n" +
+    ([.protectedPaths[] | "| `" + .path + "` | `" + .forkBlob + "` | `" + .upstreamBlob + "` | `" + .finalBlob + "` | `" + .disposition + "` | " + .validation + " |"] | join("\n")) +
+    "\n\n### Classified baseline delta\n\n" +
+    ([.classifiedBaselineDelta[] | "- `" + .status + "` `" + .path + "`: " + .classification] | join("\n")) +
+    "\n\n### Required before review-ready\n\n" +
+    "- Obtain the approved values for every new `TFeatureSet` field and freshly adapt all four Enterprise Mode paths.\n" +
+    "- Harden and test the fork publisher under the immutable `T/U/F` contract.\n" +
+    "- Classify every additional `U..F` path and replace all pending dispositions with tested final dispositions.\n" +
+    "- Complete migration rehearsal, backend validation, Docker build, canary, rollback, and release-owner gates.\n\n" +
+    "The automation cannot approve, merge, tag, publish, deploy, force-push, or bypass branch protection."
+  ' "$manifest_path" >"$output_path"
+}
+
+main() {
+  require_command git
+  require_command jq
+  require_command sort
+
+  if [[ -n "${VALIDATE_MANIFEST_PATH:-}" ]]; then
+    validate_manifest "$VALIDATE_MANIFEST_PATH" "${REQUIRE_FINAL_MANIFEST:-false}"
+    return 0
+  fi
+
+  local upstream_tag="${UPSTREAM_TAG:-}"
+  local expected_upstream_sha="${EXPECTED_UPSTREAM_SHA:-}"
+  local expected_fork_tip="${EXPECTED_FORK_TIP:-}"
+  local upstream_url="${UPSTREAM_URL:-$DEFAULT_UPSTREAM_URL}"
+  local origin_remote="${ORIGIN_REMOTE:-$DEFAULT_ORIGIN_REMOTE}"
+  local base_branch="${BASE_BRANCH:-main}"
+  local evidence_path="${EVIDENCE_PATH:-$PWD/upstream-sync-evidence.json}"
+  local pr_body_path="${PR_BODY_PATH:-$PWD/upstream-sync-pr-body.md}"
+  local work_root="${WORK_ROOT:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}}"
+  local sync_branch
+  local upstream_ref
+  local remote_sync_ref
+  local tag_object
+  local upstream_sha
+  local fork_tip
+  local merge_base
+  local divergence
+  local worktree
+  local baseline_commit
+  local index_tree
+  local decision
+
+  [[ -n "$upstream_tag" ]] || die "UPSTREAM_TAG is required"
+  [[ -n "$expected_upstream_sha" ]] || die "EXPECTED_UPSTREAM_SHA is required"
+  [[ -n "$expected_fork_tip" ]] || die "EXPECTED_FORK_TIP is required"
+  require_safe_tag "$upstream_tag"
+  require_full_sha EXPECTED_UPSTREAM_SHA "$expected_upstream_sha"
+  require_full_sha EXPECTED_FORK_TIP "$expected_fork_tip"
+  [[ "$upstream_url" == "$DEFAULT_UPSTREAM_URL" || "${ALLOW_LOCAL_FIXTURE_URL:-0}" == "1" ]] ||
+    die "UPSTREAM_URL must remain the canonical Infisical repository"
+  [[ "$origin_remote" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid origin remote name"
+  [[ "$base_branch" == "main" || "$base_branch" == "dev" ]] || die "BASE_BRANCH must be main or dev"
+
+  sync_branch="sync/upstream-$upstream_tag"
+  git check-ref-format "refs/heads/$sync_branch" >/dev/null 2>&1 || die "invalid sync branch: $sync_branch"
+  upstream_ref="refs/upstream-sync/tags/$upstream_tag-$expected_upstream_sha"
+  remote_sync_ref="refs/remotes/$origin_remote/$sync_branch"
+
+  [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "tracked worktree changes are not allowed"
+  git fetch --no-tags "$origin_remote" "+refs/heads/$base_branch:refs/remotes/$origin_remote/$base_branch"
+  fork_tip="$(git rev-parse "refs/remotes/$origin_remote/$base_branch^{commit}")"
+  [[ "$fork_tip" == "$expected_fork_tip" ]] ||
+    die "fork tip moved: expected $expected_fork_tip, found $fork_tip; fresh confirmation is required"
+
+  if ! git show-ref --verify --quiet "$upstream_ref"; then
+    git fetch --no-tags "$upstream_url" "refs/tags/$upstream_tag:$upstream_ref"
+  fi
+  tag_object="$(git rev-parse "$upstream_ref")"
+  upstream_sha="$(git rev-parse "$upstream_ref^{commit}")"
+  [[ "$upstream_sha" == "$expected_upstream_sha" ]] ||
+    die "upstream tag/SHA mismatch: expected $expected_upstream_sha, found $upstream_sha"
+
+  require_regular_blob "$PWD" "$fork_tip" "$LICENSE_PATH"
+  require_regular_blob "$PWD" "$fork_tip" "$PUBLISH_WORKFLOW_PATH"
+  require_regular_blob "$PWD" "$upstream_sha" "$LICENSE_TEST_PATH" true
+  require_regular_blob "$PWD" "$upstream_sha" "$LICENSE_FNS_PATH"
+  require_regular_blob "$PWD" "$upstream_sha" "$LICENSE_SERVICE_PATH"
+  require_regular_blob "$PWD" "$upstream_sha" "$LICENSE_TYPES_PATH"
+
+  merge_base="$(git merge-base "$fork_tip" "$upstream_sha")"
+  divergence="$(git rev-list --left-right --count "$fork_tip...$upstream_sha" | tr '\t' '/')"
+
+  git fetch --no-tags "$origin_remote" "+refs/heads/$sync_branch:$remote_sync_ref" 2>/dev/null || true
+  if git show-ref --verify --quiet "$remote_sync_ref"; then
+    baseline_commit="$(git rev-parse "$remote_sync_ref^{commit}")"
+    assert_baseline_commit "$PWD" "$baseline_commit" "$fork_tip" "$upstream_sha" "$upstream_tag"
+    decision="noop"
+    log "verified existing generated branch $sync_branch at $baseline_commit"
+  else
+    [[ ! -e "$evidence_path" ]] || die "evidence output already exists: $evidence_path"
+    [[ ! -e "$pr_body_path" ]] || die "PR body output already exists: $pr_body_path"
+    [[ ! -e "$work_root/upstream-sync-$upstream_tag" ]] || die "worktree path already exists"
+    if git show-ref --verify --quiet "refs/heads/$sync_branch"; then
+      die "local branch collision at refs/heads/$sync_branch"
+    fi
+
+    worktree="$work_root/upstream-sync-$upstream_tag"
+    git worktree add --detach "$worktree" "$fork_tip" >/dev/null
+    WORKTREE_TO_REMOVE="$worktree"
+    git -C "$worktree" switch -c "$sync_branch" >/dev/null
+    BRANCH_TO_DELETE="$sync_branch"
+
+    if git -C "$worktree" merge --no-ff --no-commit "$upstream_sha"; then
+      die "expected reviewed conflict $EXPECTED_CONFLICT was not produced; inventory review is required"
+    fi
+    [[ -f "$worktree/.git/MERGE_HEAD" || -f "$(git -C "$worktree" rev-parse --git-path MERGE_HEAD)" ]] ||
+      git -C "$worktree" rev-parse --verify -q MERGE_HEAD >/dev/null || die "merge did not enter a resolvable conflict state"
+    assert_expected_conflicts "$worktree"
+
+    restore_exact_path "$worktree" "$fork_tip" "$LICENSE_PATH"
+    git -C "$worktree" rm -f --ignore-unmatch -- "$EE_LICENSE_PATH" >/dev/null
+    restore_exact_path "$worktree" "$upstream_sha" "$LICENSE_TEST_PATH"
+    restore_exact_path "$worktree" "$upstream_sha" "$LICENSE_FNS_PATH"
+    restore_exact_path "$worktree" "$upstream_sha" "$LICENSE_SERVICE_PATH"
+    restore_exact_path "$worktree" "$upstream_sha" "$LICENSE_TYPES_PATH"
+    restore_exact_path "$worktree" "$fork_tip" "$PUBLISH_WORKFLOW_PATH"
+
+    [[ -z "$(git -C "$worktree" diff --name-only --diff-filter=U)" ]] || die "unmerged paths remain"
+    git -C "$worktree" diff --check "$upstream_sha" -- \
+      "$LICENSE_PATH" "$EE_LICENSE_PATH" "$PUBLISH_WORKFLOW_PATH"
+    index_tree="$(git -C "$worktree" write-tree)"
+    assert_path_matches "$worktree" "$fork_tip" "$index_tree" "$LICENSE_PATH"
+    [[ "$(blob_at "$worktree" "$index_tree" "$EE_LICENSE_PATH")" == "absent" ]] || die "$EE_LICENSE_PATH was recreated"
+    assert_path_matches "$worktree" "$upstream_sha" "$index_tree" "$LICENSE_TEST_PATH"
+    assert_path_matches "$worktree" "$upstream_sha" "$index_tree" "$LICENSE_FNS_PATH"
+    assert_path_matches "$worktree" "$upstream_sha" "$index_tree" "$LICENSE_SERVICE_PATH"
+    assert_path_matches "$worktree" "$upstream_sha" "$index_tree" "$LICENSE_TYPES_PATH"
+    assert_path_matches "$worktree" "$fork_tip" "$index_tree" "$PUBLISH_WORKFLOW_PATH"
+    assert_baseline_delta "$worktree" "$upstream_sha" "$index_tree"
+
+    git -C "$worktree" \
+      -c user.name="upstream-sync[bot]" \
+      -c user.email="upstream-sync[bot]@users.noreply.github.com" \
+      commit -m "merge: sync upstream $upstream_tag" >/dev/null
+    baseline_commit="$(git -C "$worktree" rev-parse HEAD)"
+    assert_baseline_commit "$worktree" "$baseline_commit" "$fork_tip" "$upstream_sha" "$upstream_tag"
+    decision="prepare"
+    log "prepared $sync_branch at $baseline_commit without pushing"
+  fi
+
+  write_manifest "$PWD" "$evidence_path" "$upstream_tag" "$tag_object" "$upstream_sha" "$fork_tip" \
+    "$baseline_commit" "$merge_base" "$divergence" "$decision" "$sync_branch"
+  write_pr_body "$evidence_path" "$pr_body_path"
+
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    {
+      printf 'decision=%s\n' "$decision"
+      printf 'branch=%s\n' "$sync_branch"
+      printf 'baseline_commit=%s\n' "$baseline_commit"
+      printf 'upstream_tag_object=%s\n' "$tag_object"
+      printf 'upstream_sha=%s\n' "$upstream_sha"
+      printf 'fork_tip=%s\n' "$fork_tip"
+      printf 'evidence_path=%s\n' "$evidence_path"
+      printf 'pr_body_path=%s\n' "$pr_body_path"
+    } >>"$GITHUB_OUTPUT"
+  fi
+
+  PREPARE_SUCCEEDED=1
+}
+
+main "$@"

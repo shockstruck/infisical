@@ -1,0 +1,161 @@
+name: Prepare guarded upstream sync
+
+on:
+    workflow_dispatch:
+        inputs:
+            upstream_tag:
+                description: Exact canonical upstream tag, without normalization
+                required: true
+                type: string
+            expected_upstream_sha:
+                description: Expected full peeled commit SHA for the canonical tag
+                required: true
+                type: string
+
+concurrency:
+    group: upstream-sync-${{ inputs.upstream_tag }}-${{ inputs.expected_upstream_sha }}
+    cancel-in-progress: false
+
+permissions:
+    contents: read
+
+jobs:
+    prepare-draft:
+        name: Prepare whole-tree merge and draft PR
+        if: github.repository == 'shockstruck/infisical' && github.ref == 'refs/heads/main'
+        runs-on: ubuntu-latest
+        environment: upstream-sync
+        env:
+            UPSTREAM_URL: https://github.com/Infisical/infisical.git
+            UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+            EXPECTED_UPSTREAM_SHA: ${{ inputs.expected_upstream_sha }}
+            EXPECTED_FORK_TIP: 2cc6bffc368cf365d0fcf018945587a94c34c5c8
+            BASE_BRANCH: main
+            EXPECTED_APP_SLUG: ${{ vars.UPSTREAM_SYNC_APP_SLUG }}
+            EXPECTED_APP_INSTALLATION_ID: "150211304"
+        steps:
+            - name: Validate approved repository configuration
+              shell: bash
+              run: |
+                  set -Eeuo pipefail
+                  [[ "$BASE_BRANCH" == "main" ]] || {
+                    printf 'The approved main-only sync PR base changed unexpectedly.\n' >&2
+                    exit 1
+                  }
+                  [[ "$EXPECTED_APP_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ ]] || {
+                    printf 'UPSTREAM_SYNC_APP_SLUG must identify the approved dedicated GitHub App.\n' >&2
+                    exit 1
+                  }
+
+            - name: Checkout automation source without persisted credentials
+              uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+              with:
+                  fetch-depth: 0
+                  persist-credentials: false
+
+            - name: Prepare verified merge baseline without pushing
+              id: prepare
+              env:
+                  EVIDENCE_PATH: ${{ runner.temp }}/upstream-sync-evidence.json
+                  PR_BODY_PATH: ${{ runner.temp }}/upstream-sync-pr-body.md
+                  WORK_ROOT: ${{ runner.temp }}
+              run: .github/scripts/prepare-upstream-sync.sh
+
+            - name: Upload protected-path evidence
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+              with:
+                  name: upstream-sync-${{ inputs.upstream_tag }}-${{ github.run_id }}
+                  path: |
+                      ${{ steps.prepare.outputs.evidence_path }}
+                      ${{ steps.prepare.outputs.pr_body_path }}
+                  if-no-files-found: error
+                  retention-days: 30
+
+            - name: Mint repository-scoped GitHub App token
+              id: app-token
+              uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b # v2.1.1
+              with:
+                  app-id: ${{ secrets.UPSTREAM_SYNC_APP_ID }}
+                  private-key: ${{ secrets.UPSTREAM_SYNC_APP_PRIVATE_KEY }}
+                  owner: shockstruck
+                  repositories: infisical
+                  permission-contents: write
+                  permission-pull-requests: write
+                  permission-workflows: write
+
+            - name: Verify dedicated GitHub App identity
+              env:
+                  ACTUAL_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+                  ACTUAL_APP_INSTALLATION_ID: ${{ steps.app-token.outputs.installation-id }}
+              shell: bash
+              run: |
+                  set -Eeuo pipefail
+                  [[ "$ACTUAL_APP_SLUG" == "$EXPECTED_APP_SLUG" ]] || {
+                    printf 'Minted token belongs to unexpected GitHub App %s.\n' "$ACTUAL_APP_SLUG" >&2
+                    exit 1
+                  }
+                  [[ "$ACTUAL_APP_INSTALLATION_ID" == "$EXPECTED_APP_INSTALLATION_ID" ]] || {
+                    printf 'Minted token belongs to unexpected GitHub App installation %s.\n' "$ACTUAL_APP_INSTALLATION_ID" >&2
+                    exit 1
+                  }
+
+            - name: Push only a newly generated branch
+              if: steps.prepare.outputs.decision == 'prepare'
+              env:
+                  APP_TOKEN: ${{ steps.app-token.outputs.token }}
+                  SYNC_BRANCH: ${{ steps.prepare.outputs.branch }}
+              shell: bash
+              run: |
+                  set -Eeuo pipefail
+                  remote="https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+                  git push "$remote" "refs/heads/${SYNC_BRANCH}:refs/heads/${SYNC_BRANCH}"
+
+            - name: Open or verify draft pull request
+              env:
+                  GH_TOKEN: ${{ steps.app-token.outputs.token }}
+                  APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+                  SYNC_BRANCH: ${{ steps.prepare.outputs.branch }}
+                  PR_BODY_PATH: ${{ steps.prepare.outputs.pr_body_path }}
+              shell: bash
+              run: |
+                  set -Eeuo pipefail
+                  existing="$RUNNER_TEMP/existing-pr.json"
+                  gh pr list \
+                    --repo "$GITHUB_REPOSITORY" \
+                    --head "$SYNC_BRANCH" \
+                    --state all \
+                    --json number,state,isDraft,baseRefName,headRefName,author,body \
+                    --limit 2 > "$existing"
+
+                  count="$(jq length "$existing")"
+                  if [[ "$count" == "0" ]]; then
+                    gh pr create \
+                      --repo "$GITHUB_REPOSITORY" \
+                      --draft \
+                      --base "$BASE_BRANCH" \
+                      --head "$SYNC_BRANCH" \
+                      --title "merge: sync upstream ${UPSTREAM_TAG}" \
+                      --body-file "$PR_BODY_PATH"
+                    exit 0
+                  fi
+
+                  [[ "$count" == "1" ]] || {
+                    printf 'Multiple PRs exist for protected sync branch %s.\n' "$SYNC_BRANCH" >&2
+                    exit 1
+                  }
+                  expected_body="$(<"$PR_BODY_PATH")"
+                  jq -e \
+                    --arg base "$BASE_BRANCH" \
+                    --arg head "$SYNC_BRANCH" \
+                    --arg author "${APP_SLUG}[bot]" \
+                    --arg body "$expected_body" '
+                      .[0].state == "OPEN" and
+                      .[0].isDraft == true and
+                      .[0].baseRefName == $base and
+                      .[0].headRefName == $head and
+                      .[0].author.login == $author and
+                      .[0].body == $body
+                    ' "$existing" >/dev/null || {
+                      printf 'Existing PR is not the exact open draft expected for this branch/base.\n' >&2
+                      exit 1
+                    }
