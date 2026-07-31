@@ -59,6 +59,27 @@ verify_labels() {
     ' >/dev/null || die "existing digest labels do not match T/U/F"
 }
 
+verify_provenance_identity() {
+  local predicate="$1"
+  local upstream_tag="$2"
+  local upstream_sha="$3"
+  local fork_sha="$4"
+
+  jq -e \
+    --arg t "$upstream_tag" \
+    --arg u "$upstream_sha" \
+    --arg f "$fork_sha" '
+      (.predicateType | startswith("https://slsa.dev/provenance/")) and
+      (
+        (.predicate.invocation.parameters.args //
+          .predicate.buildDefinition.externalParameters.request.args // {}) as $args |
+        ($args["build-arg:UPSTREAM_TAG"] // $args.UPSTREAM_TAG) == $t and
+        ($args["build-arg:UPSTREAM_COMMIT_SHA"] // $args.UPSTREAM_COMMIT_SHA) == $u and
+        ($args["build-arg:FORK_COMMIT_SHA"] // $args.FORK_COMMIT_SHA) == $f
+      )
+    ' <<<"$predicate" >/dev/null || die "BuildKit provenance does not contain exact T/U/F build arguments"
+}
+
 verify_buildkit_provenance() {
   local digest="$1"
   local upstream_tag="$2"
@@ -87,16 +108,7 @@ verify_buildkit_provenance() {
   [[ -n "$layer_digest" ]] || die "BuildKit attestation has no in-toto provenance layer"
 
   predicate="$(crane blob "$EXPECTED_IMAGE@$layer_digest")"
-  jq -e \
-    --arg t "$upstream_tag" \
-    --arg u "$upstream_sha" \
-    --arg f "$fork_sha" '
-      (.predicateType | startswith("https://slsa.dev/provenance/")) and
-      (.predicate.invocation.parameters.args // {}) as $args |
-      ($args["build-arg:UPSTREAM_TAG"] // $args.UPSTREAM_TAG) == $t and
-      ($args["build-arg:UPSTREAM_COMMIT_SHA"] // $args.UPSTREAM_COMMIT_SHA) == $u and
-      ($args["build-arg:FORK_COMMIT_SHA"] // $args.FORK_COMMIT_SHA) == $f
-    ' <<<"$predicate" >/dev/null || die "BuildKit provenance does not contain exact T/U/F build arguments"
+  verify_provenance_identity "$predicate" "$upstream_tag" "$upstream_sha" "$fork_sha"
 }
 
 verify_signed_existing_image() {
@@ -266,4 +278,6 @@ main() {
   emit_json "$upstream_tag" "$upstream_sha" "$fork_sha" "$release_ref" "$stable" "$decision" "$exact_digest" "${tags[@]}"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
