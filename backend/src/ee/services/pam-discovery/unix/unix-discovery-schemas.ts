@@ -8,7 +8,7 @@ import { isValidIpOrCidr } from "@app/lib/ip";
 import { expandTargets } from "./unix-discovery-fns";
 
 const HOSTNAME_REGEX = new RE2(
-  /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/
+  "^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
 );
 
 // only IPv4 addresses and IPv4 CIDR ranges are supported
