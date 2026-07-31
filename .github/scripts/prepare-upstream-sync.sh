@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 readonly DEFAULT_UPSTREAM_URL="https://github.com/Infisical/infisical.git"
 readonly DEFAULT_ORIGIN_REMOTE="origin"
+readonly UPSTREAM_RELEASE_ENDPOINT="repos/Infisical/infisical/releases?per_page=100"
 readonly EXPECTED_CONFLICT="backend/src/ee/services/license/license-types.ts"
 
 readonly LICENSE_PATH="LICENSE"
@@ -60,12 +61,104 @@ require_full_sha() {
   [[ "$value" =~ ^[0-9a-f]{40}$ ]] || die "$name must be a lowercase full 40-character commit SHA"
 }
 
-require_safe_tag() {
+require_stable_tag() {
   local tag="$1"
 
-  [[ "$tag" =~ ^v0\.[0-9]+\.[0-9]+([.-][A-Za-z0-9_.-]+)?$ ]] ||
-    die "UPSTREAM_TAG must be an exact v0.x.y stable or prerelease tag without normalization"
+  [[ "$tag" =~ ^v0\.[0-9]+\.[0-9]+$ ]] ||
+    die "discovered upstream release tag must be an exact stable v0.x.y tag"
   git check-ref-format "refs/tags/$tag" >/dev/null 2>&1 || die "invalid upstream Git tag: $tag"
+}
+
+read_remote_tag_object() {
+  local output_variable="$1"
+  local upstream_url="$2"
+  local upstream_tag="$3"
+  local phase="$4"
+  local fixture=""
+  local output
+  local object
+  local ref
+
+  case "$phase" in
+    initial) fixture="${UPSTREAM_REMOTE_TAG_OBJECT_INITIAL_FIXTURE:-}" ;;
+    final) fixture="${UPSTREAM_REMOTE_TAG_OBJECT_FINAL_FIXTURE:-}" ;;
+    *) die "unknown remote tag verification phase: $phase" ;;
+  esac
+
+  if [[ -n "$fixture" ]]; then
+    [[ "${ALLOW_LOCAL_FIXTURE_URL:-0}" == "1" ]] ||
+      die "remote tag object fixtures are allowed only for local policy tests"
+    require_full_sha "UPSTREAM_REMOTE_TAG_OBJECT_${phase^^}_FIXTURE" "$fixture"
+    printf -v "$output_variable" '%s' "$fixture"
+    return 0
+  fi
+
+  output="$(git ls-remote --refs "$upstream_url" "refs/tags/$upstream_tag")" ||
+    die "failed to resolve canonical upstream tag $upstream_tag"
+  [[ "$(awk 'NF { count++ } END { print count + 0 }' <<<"$output")" == "1" ]] ||
+    die "canonical upstream tag $upstream_tag is absent or ambiguous"
+  read -r object ref <<<"$output"
+  require_full_sha "canonical upstream tag object" "$object"
+  [[ "$ref" == "refs/tags/$upstream_tag" ]] || die "canonical upstream returned an unexpected tag ref"
+  printf -v "$output_variable" '%s' "$object"
+}
+
+discover_upstream_release() {
+  local output_tag_variable="$1"
+  local output_release_id_variable="$2"
+  local output_release_url_variable="$3"
+  local output_published_at_variable="$4"
+  local fixture_path="${UPSTREAM_RELEASE_FIXTURE_PATH:-}"
+  local releases_json
+  local release_json
+  local tag
+  local release_id
+  local release_url
+  local published_at
+
+  if [[ -n "$fixture_path" ]]; then
+    [[ "${ALLOW_LOCAL_FIXTURE_URL:-0}" == "1" ]] ||
+      die "release API fixtures are allowed only for local policy tests"
+    [[ -f "$fixture_path" ]] || die "release API fixture does not exist: $fixture_path"
+    releases_json="$(<"$fixture_path")"
+  else
+    require_command gh
+    releases_json="$(gh api --hostname github.com --method GET --paginate --slurp "$UPSTREAM_RELEASE_ENDPOINT")" ||
+      die "canonical release discovery failed"
+  fi
+
+  jq -e 'type == "array" and all(.[]; type == "array")' <<<"$releases_json" >/dev/null ||
+    die "canonical release API returned an invalid paginated response"
+  release_json="$(jq -ce '
+    [
+      .[][] |
+      select(
+        type == "object" and
+        .draft == false and
+        .prerelease == false and
+        (.id | type) == "number" and
+        (.tag_name | type) == "string" and
+        (.tag_name | test("^v0\\.[0-9]+\\.[0-9]+$")) and
+        (.html_url | type) == "string" and
+        (.published_at | type) == "string"
+      )
+    ] |
+    sort_by(.published_at, .id) |
+    last // empty
+  ' <<<"$releases_json")" || die "no published stable v0.x.y upstream release was found"
+
+  tag="$(jq -r '.tag_name' <<<"$release_json")"
+  release_id="$(jq -r '.id | tostring' <<<"$release_json")"
+  release_url="$(jq -r '.html_url' <<<"$release_json")"
+  published_at="$(jq -r '.published_at' <<<"$release_json")"
+  require_stable_tag "$tag"
+  [[ "$release_url" == "https://github.com/Infisical/infisical/releases/tag/$tag" ]] ||
+    die "latest release URL does not identify the canonical Infisical tag"
+
+  printf -v "$output_tag_variable" '%s' "$tag"
+  printf -v "$output_release_id_variable" '%s' "$release_id"
+  printf -v "$output_release_url_variable" '%s' "$release_url"
+  printf -v "$output_published_at_variable" '%s' "$published_at"
 }
 
 blob_at() {
@@ -261,22 +354,28 @@ write_manifest() {
   local repo="$1"
   local output_path="$2"
   local upstream_tag="$3"
-  local tag_object="$4"
-  local upstream_sha="$5"
-  local fork_tip="$6"
-  local reviewed_base_tip="$7"
-  local stage_a_merge="$8"
-  local stage_a_head="$9"
-  local baseline_commit="${10}"
-  local synthetic_merge_tree="${11}"
-  local merge_base="${12}"
-  local divergence="${13}"
-  local decision="${14}"
-  local branch="${15}"
+  local release_id="$4"
+  local release_url="$5"
+  local release_published_at="$6"
+  local tag_object="$7"
+  local upstream_sha="$8"
+  local fork_tip="$9"
+  local reviewed_base_tip="${10}"
+  local stage_a_merge="${11}"
+  local stage_a_head="${12}"
+  local baseline_commit="${13}"
+  local synthetic_merge_tree="${14}"
+  local merge_base="${15}"
+  local divergence="${16}"
+  local decision="${17}"
+  local branch="${18}"
 
   jq -n \
     --arg schemaVersion "1" \
     --arg upstreamTag "$upstream_tag" \
+    --arg upstreamReleaseId "$release_id" \
+    --arg upstreamReleaseUrl "$release_url" \
+    --arg upstreamReleasePublishedAt "$release_published_at" \
     --arg upstreamTagObject "$tag_object" \
     --arg upstreamSha "$upstream_sha" \
     --arg forkTip "$fork_tip" \
@@ -312,7 +411,11 @@ write_manifest() {
     --arg workflowFinal "$(blob_at "$repo" "$baseline_commit" "$PUBLISH_WORKFLOW_PATH")" \
     '{
       schemaVersion: ($schemaVersion | tonumber),
+      targetSelection: "latest-published-stable-release",
       upstreamTag: $upstreamTag,
+      upstreamReleaseId: $upstreamReleaseId,
+      upstreamReleaseUrl: $upstreamReleaseUrl,
+      upstreamReleasePublishedAt: $upstreamReleasePublishedAt,
       upstreamTagObject: $upstreamTagObject,
       upstreamSha: $upstreamSha,
       forkTip: $forkTip,
@@ -350,6 +453,13 @@ validate_manifest() {
   local require_final="${2:-false}"
 
   jq -e --argjson requireFinal "$require_final" '
+    .targetSelection == "latest-published-stable-release" and
+    (.upstreamTag | test("^v0\\.[0-9]+\\.[0-9]+$")) and
+    (.upstreamReleaseId | test("^[0-9]+$")) and
+    .upstreamReleaseUrl == ("https://github.com/Infisical/infisical/releases/tag/" + .upstreamTag) and
+    (.upstreamReleasePublishedAt | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T")) and
+    (.upstreamTagObject | test("^[0-9a-f]{40}$")) and
+    (.upstreamSha | test("^[0-9a-f]{40}$")) and
     (.protectedPaths | length) == 7 and
     ([.protectedPaths[].path] | length == (unique | length)) and
     ([.protectedPaths[].path] == [
@@ -375,6 +485,9 @@ write_pr_body() {
     "This draft contains only the mechanically prepared whole-tree merge baseline. It must remain draft until every pending protected-path disposition is resolved and the full validation matrix passes.\n\n" +
     "| Identity | Value |\n| --- | --- |\n" +
     "| Upstream tag | `" + .upstreamTag + "` |\n" +
+    "| Target selection | Latest published stable release, frozen at run start |\n" +
+    "| Upstream release ID | `" + .upstreamReleaseId + "` |\n" +
+    "| Upstream release published | `" + .upstreamReleasePublishedAt + "` |\n" +
     "| Upstream tag object | `" + .upstreamTagObject + "` |\n" +
     "| Upstream commit (U) | `" + .upstreamSha + "` |\n" +
     "| Immutable fork tip (F0) | `" + .forkTip + "` |\n" +
@@ -408,8 +521,6 @@ main() {
     return 0
   fi
 
-  local upstream_tag="${UPSTREAM_TAG:-}"
-  local expected_upstream_sha="${EXPECTED_UPSTREAM_SHA:-}"
   local expected_fork_tip="${EXPECTED_FORK_TIP:-}"
   local expected_reviewed_base_tip="${EXPECTED_REVIEWED_BASE_TIP:-}"
   local expected_stage_a_merge="${EXPECTED_STAGE_A_MERGE:-}"
@@ -423,6 +534,18 @@ main() {
   local sync_branch
   local upstream_ref
   local remote_sync_ref
+  local remote_branch_output
+  local remote_branch_head
+  local remote_branch_ref
+  local final_remote_branch_output
+  local final_remote_branch_head
+  local final_remote_branch_ref
+  local upstream_tag
+  local upstream_release_id
+  local upstream_release_url
+  local upstream_release_published_at
+  local initial_tag_object
+  local final_tag_object
   local tag_object
   local upstream_sha
   local fork_tip
@@ -435,14 +558,10 @@ main() {
   local index_tree
   local decision
 
-  [[ -n "$upstream_tag" ]] || die "UPSTREAM_TAG is required"
-  [[ -n "$expected_upstream_sha" ]] || die "EXPECTED_UPSTREAM_SHA is required"
   [[ -n "$expected_fork_tip" ]] || die "EXPECTED_FORK_TIP is required"
   [[ -n "$expected_reviewed_base_tip" ]] || die "EXPECTED_REVIEWED_BASE_TIP is required"
   [[ -n "$expected_stage_a_merge" ]] || die "EXPECTED_STAGE_A_MERGE is required"
   [[ -n "$expected_stage_a_head" ]] || die "EXPECTED_STAGE_A_HEAD is required"
-  require_safe_tag "$upstream_tag"
-  require_full_sha EXPECTED_UPSTREAM_SHA "$expected_upstream_sha"
   require_full_sha EXPECTED_FORK_TIP "$expected_fork_tip"
   require_full_sha EXPECTED_REVIEWED_BASE_TIP "$expected_reviewed_base_tip"
   require_full_sha EXPECTED_STAGE_A_MERGE "$expected_stage_a_merge"
@@ -452,9 +571,12 @@ main() {
   [[ "$origin_remote" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid origin remote name"
   [[ "$base_branch" == "main" || "$base_branch" == "dev" ]] || die "BASE_BRANCH must be main or dev"
 
+  discover_upstream_release upstream_tag upstream_release_id upstream_release_url upstream_release_published_at
+  read_remote_tag_object initial_tag_object "$upstream_url" "$upstream_tag" initial
+
   sync_branch="sync/upstream-$upstream_tag"
   git check-ref-format "refs/heads/$sync_branch" >/dev/null 2>&1 || die "invalid sync branch: $sync_branch"
-  upstream_ref="refs/upstream-sync/tags/$upstream_tag-$expected_upstream_sha"
+  upstream_ref="refs/upstream-sync/tags/$upstream_tag-$initial_tag_object"
   remote_sync_ref="refs/remotes/$origin_remote/$sync_branch"
 
   [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "tracked worktree changes are not allowed"
@@ -469,9 +591,13 @@ main() {
     git fetch --no-tags "$upstream_url" "refs/tags/$upstream_tag:$upstream_ref"
   fi
   tag_object="$(git rev-parse "$upstream_ref")"
+  [[ "$tag_object" == "$initial_tag_object" ]] ||
+    die "canonical upstream tag object changed while it was being fetched"
   upstream_sha="$(git rev-parse "$upstream_ref^{commit}")"
-  [[ "$upstream_sha" == "$expected_upstream_sha" ]] ||
-    die "upstream tag/SHA mismatch: expected $expected_upstream_sha, found $upstream_sha"
+  require_full_sha "discovered peeled upstream commit" "$upstream_sha"
+  read_remote_tag_object final_tag_object "$upstream_url" "$upstream_tag" final
+  [[ "$final_tag_object" == "$initial_tag_object" ]] ||
+    die "canonical upstream tag moved during discovery; no target was frozen"
 
   require_regular_blob "$PWD" "$fork_tip" "$LICENSE_PATH"
   require_regular_blob "$PWD" "$fork_tip" "$PUBLISH_WORKFLOW_PATH"
@@ -483,13 +609,28 @@ main() {
   merge_base="$(git merge-base "$fork_tip" "$upstream_sha")"
   divergence="$(git rev-list --left-right --count "$fork_tip...$upstream_sha" | tr '\t' '/')"
 
-  git fetch --no-tags "$origin_remote" "+refs/heads/$sync_branch:$remote_sync_ref" 2>/dev/null || true
-  if git show-ref --verify --quiet "$remote_sync_ref"; then
+  remote_branch_output="$(git ls-remote --heads "$origin_remote" "refs/heads/$sync_branch")" ||
+    die "failed to determine whether protected sync branch $sync_branch exists"
+  if [[ -n "$remote_branch_output" ]]; then
+    [[ "$(awk 'NF { count++ } END { print count + 0 }' <<<"$remote_branch_output")" == "1" ]] ||
+      die "protected sync branch $sync_branch resolved ambiguously"
+    read -r remote_branch_head remote_branch_ref <<<"$remote_branch_output"
+    require_full_sha "remote sync branch head" "$remote_branch_head"
+    [[ "$remote_branch_ref" == "refs/heads/$sync_branch" ]] || die "origin returned an unexpected sync branch ref"
+    git fetch --no-tags "$origin_remote" "+refs/heads/$sync_branch:$remote_sync_ref" ||
+      die "failed to fetch existing protected sync branch"
     baseline_commit="$(git rev-parse "$remote_sync_ref^{commit}")"
+    [[ "$baseline_commit" == "$remote_branch_head" ]] || die "fetched sync branch does not match its observed head"
     assert_baseline_commit "$PWD" "$baseline_commit" "$fork_tip" "$upstream_sha" "$upstream_tag"
+    final_remote_branch_output="$(git ls-remote --heads "$origin_remote" "refs/heads/$sync_branch")" ||
+      die "failed to revalidate protected sync branch $sync_branch"
+    read -r final_remote_branch_head final_remote_branch_ref <<<"$final_remote_branch_output"
+    [[ "$final_remote_branch_head" == "$remote_branch_head" && "$final_remote_branch_ref" == "$remote_branch_ref" ]] ||
+      die "protected sync branch moved during verification"
     decision="noop"
     log "verified existing generated branch $sync_branch at $baseline_commit"
   else
+    git update-ref -d "$remote_sync_ref"
     [[ ! -e "$evidence_path" ]] || die "evidence output already exists: $evidence_path"
     [[ ! -e "$pr_body_path" ]] || die "PR body output already exists: $pr_body_path"
     [[ ! -e "$work_root/upstream-sync-$upstream_tag" ]] || die "worktree path already exists"
@@ -546,8 +687,9 @@ main() {
 
   synthetic_merge_tree="$(assert_stage_a_survives_pr_merge "$PWD" "$reviewed_base_tip" "$baseline_commit")"
 
-  write_manifest "$PWD" "$evidence_path" "$upstream_tag" "$tag_object" "$upstream_sha" "$fork_tip" \
-    "$reviewed_base_tip" "$expected_stage_a_merge" "$expected_stage_a_head" "$baseline_commit" \
+  write_manifest "$PWD" "$evidence_path" "$upstream_tag" "$upstream_release_id" "$upstream_release_url" \
+    "$upstream_release_published_at" "$tag_object" "$upstream_sha" "$fork_tip" "$reviewed_base_tip" \
+    "$expected_stage_a_merge" "$expected_stage_a_head" "$baseline_commit" \
     "$synthetic_merge_tree" "$merge_base" "$divergence" "$decision" "$sync_branch"
   write_pr_body "$evidence_path" "$pr_body_path"
 
@@ -556,6 +698,8 @@ main() {
       printf 'decision=%s\n' "$decision"
       printf 'branch=%s\n' "$sync_branch"
       printf 'baseline_commit=%s\n' "$baseline_commit"
+      printf 'upstream_tag=%s\n' "$upstream_tag"
+      printf 'upstream_release_id=%s\n' "$upstream_release_id"
       printf 'upstream_tag_object=%s\n' "$tag_object"
       printf 'upstream_sha=%s\n' "$upstream_sha"
       printf 'fork_tip=%s\n' "$fork_tip"

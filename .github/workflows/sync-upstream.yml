@@ -3,21 +3,13 @@ name: Prepare guarded upstream sync
 on:
     workflow_dispatch:
         inputs:
-            upstream_tag:
-                description: Exact canonical upstream tag, without normalization
-                required: true
-                type: string
-            expected_upstream_sha:
-                description: Expected full peeled commit SHA for the canonical tag
-                required: true
-                type: string
             expected_reviewed_base_sha:
                 description: Exact reviewed main commit containing only the approved Stage A path surface
                 required: true
                 type: string
 
 concurrency:
-    group: upstream-sync-${{ inputs.upstream_tag }}-${{ inputs.expected_upstream_sha }}
+    group: upstream-sync-latest-stable
     cancel-in-progress: false
 
 permissions:
@@ -31,8 +23,6 @@ jobs:
         environment: upstream-sync
         env:
             UPSTREAM_URL: https://github.com/Infisical/infisical.git
-            UPSTREAM_TAG: ${{ inputs.upstream_tag }}
-            EXPECTED_UPSTREAM_SHA: ${{ inputs.expected_upstream_sha }}
             EXPECTED_FORK_TIP: 2cc6bffc368cf365d0fcf018945587a94c34c5c8
             EXPECTED_REVIEWED_BASE_TIP: ${{ inputs.expected_reviewed_base_sha }}
             EXPECTED_STAGE_A_MERGE: 2355d6b952c93ea22b397e8af56a7ef059f6bc9a
@@ -64,6 +54,7 @@ jobs:
               id: prepare
               env:
                   EVIDENCE_PATH: ${{ runner.temp }}/upstream-sync-evidence.json
+                  GH_TOKEN: ${{ github.token }}
                   PR_BODY_PATH: ${{ runner.temp }}/upstream-sync-pr-body.md
                   WORK_ROOT: ${{ runner.temp }}
               run: .github/scripts/prepare-upstream-sync.sh
@@ -71,7 +62,7 @@ jobs:
             - name: Upload protected-path evidence
               uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
               with:
-                  name: upstream-sync-${{ inputs.upstream_tag }}-${{ github.run_id }}
+                  name: upstream-sync-${{ steps.prepare.outputs.upstream_tag }}-${{ github.run_id }}
                   path: |
                       ${{ steps.prepare.outputs.evidence_path }}
                       ${{ steps.prepare.outputs.pr_body_path }}
@@ -110,28 +101,60 @@ jobs:
               if: steps.prepare.outputs.decision == 'prepare'
               env:
                   APP_TOKEN: ${{ steps.app-token.outputs.token }}
+                  BASE_BRANCH: main
+                  BASELINE_COMMIT: ${{ steps.prepare.outputs.baseline_commit }}
+                  EXPECTED_BASE_SHA: ${{ steps.prepare.outputs.reviewed_base_tip }}
+                  GH_TOKEN: ${{ steps.app-token.outputs.token }}
                   SYNC_BRANCH: ${{ steps.prepare.outputs.branch }}
               shell: bash
               run: |
                   set -Eeuo pipefail
+                  actual_base="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BASE_BRANCH}" --jq .object.sha)"
+                  [[ "$actual_base" == "$EXPECTED_BASE_SHA" ]] || {
+                    printf 'Reviewed base moved before branch creation: expected %s, found %s.\n' \
+                      "$EXPECTED_BASE_SHA" "$actual_base" >&2
+                    exit 1
+                  }
                   remote="https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-                  git push "$remote" "refs/heads/${SYNC_BRANCH}:refs/heads/${SYNC_BRANCH}"
+                  # Empty expected OID makes this create-only; any existing branch rejects the push.
+                  git push \
+                    --force-with-lease="refs/heads/${SYNC_BRANCH}:" \
+                    "$remote" \
+                    "refs/heads/${SYNC_BRANCH}:refs/heads/${SYNC_BRANCH}"
+                  actual_head="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${SYNC_BRANCH}" --jq .object.sha)"
+                  [[ "$actual_head" == "$BASELINE_COMMIT" ]] || {
+                    printf 'Created sync branch does not point to the verified baseline.\n' >&2
+                    exit 1
+                  }
 
             - name: Open or verify draft pull request
               env:
                   GH_TOKEN: ${{ steps.app-token.outputs.token }}
                   APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+                  BASELINE_COMMIT: ${{ steps.prepare.outputs.baseline_commit }}
+                  EXPECTED_BASE_SHA: ${{ steps.prepare.outputs.reviewed_base_tip }}
                   SYNC_BRANCH: ${{ steps.prepare.outputs.branch }}
                   PR_BODY_PATH: ${{ steps.prepare.outputs.pr_body_path }}
+                  UPSTREAM_TAG: ${{ steps.prepare.outputs.upstream_tag }}
               shell: bash
               run: |
                   set -Eeuo pipefail
                   existing="$RUNNER_TEMP/existing-pr.json"
+                  actual_base="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BASE_BRANCH}" --jq .object.sha)"
+                  actual_head="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${SYNC_BRANCH}" --jq .object.sha)"
+                  [[ "$actual_base" == "$EXPECTED_BASE_SHA" ]] || {
+                    printf 'Reviewed base moved before draft PR verification.\n' >&2
+                    exit 1
+                  }
+                  [[ "$actual_head" == "$BASELINE_COMMIT" ]] || {
+                    printf 'Sync branch moved before draft PR verification.\n' >&2
+                    exit 1
+                  }
                   gh pr list \
                     --repo "$GITHUB_REPOSITORY" \
                     --head "$SYNC_BRANCH" \
                     --state all \
-                    --json number,state,isDraft,baseRefName,headRefName,author,body \
+                    --json number,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,author,body \
                     --limit 2 > "$existing"
 
                   count="$(jq length "$existing")"
@@ -143,7 +166,13 @@ jobs:
                       --head "$SYNC_BRANCH" \
                       --title "merge: sync upstream ${UPSTREAM_TAG}" \
                       --body-file "$PR_BODY_PATH"
-                    exit 0
+                    gh pr list \
+                      --repo "$GITHUB_REPOSITORY" \
+                      --head "$SYNC_BRANCH" \
+                      --state all \
+                      --json number,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,author,body \
+                      --limit 2 > "$existing"
+                    count="$(jq length "$existing")"
                   fi
 
                   [[ "$count" == "1" ]] || {
@@ -153,13 +182,17 @@ jobs:
                   expected_body="$(<"$PR_BODY_PATH")"
                   jq -e \
                     --arg base "$BASE_BRANCH" \
+                    --arg baseOid "$EXPECTED_BASE_SHA" \
                     --arg head "$SYNC_BRANCH" \
+                    --arg headOid "$BASELINE_COMMIT" \
                     --arg author "${APP_SLUG}[bot]" \
                     --arg body "$expected_body" '
                       .[0].state == "OPEN" and
                       .[0].isDraft == true and
                       .[0].baseRefName == $base and
+                      .[0].baseRefOid == $baseOid and
                       .[0].headRefName == $head and
+                      .[0].headRefOid == $headOid and
                       .[0].author.login == $author and
                       .[0].body == $body
                     ' "$existing" >/dev/null || {
