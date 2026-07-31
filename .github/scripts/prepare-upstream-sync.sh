@@ -13,6 +13,17 @@ readonly LICENSE_FNS_PATH="backend/src/ee/services/license/license-fns.ts"
 readonly LICENSE_SERVICE_PATH="backend/src/ee/services/license/license-service.ts"
 readonly LICENSE_TYPES_PATH="backend/src/ee/services/license/license-types.ts"
 readonly PUBLISH_WORKFLOW_PATH=".github/workflows/release-fork-ghcr.yml"
+readonly PREPARE_SCRIPT_PATH=".github/scripts/prepare-upstream-sync.sh"
+readonly RELEASE_SCRIPT_PATH=".github/scripts/resolve-fork-release.sh"
+readonly POLICY_TEST_PATH=".github/scripts/test-upstream-sync-policies.sh"
+readonly SYNC_WORKFLOW_PATH=".github/workflows/sync-upstream.yml"
+readonly -a REVIEWED_BASE_PATHS=(
+  "$PREPARE_SCRIPT_PATH"
+  "$RELEASE_SCRIPT_PATH"
+  "$POLICY_TEST_PATH"
+  "$SYNC_WORKFLOW_PATH"
+  "$PUBLISH_WORKFLOW_PATH"
+)
 
 WORKTREE_TO_REMOVE=""
 BRANCH_TO_DELETE=""
@@ -106,6 +117,76 @@ sorted_unique_lines() {
   LC_ALL=C sort -u
 }
 
+reviewed_base_paths() {
+  printf '%s\n' "${REVIEWED_BASE_PATHS[@]}" | sorted_unique_lines
+}
+
+assert_reviewed_base() {
+  local repo="$1"
+  local reviewed_base_tip="$2"
+  local fork_tip="$3"
+  local stage_a_merge="$4"
+  local stage_a_head="$5"
+  local parent_count
+  local expected_paths
+  local final_paths
+  local history_paths
+  local path
+
+  git -C "$repo" cat-file -e "$fork_tip^{commit}" 2>/dev/null || die "immutable F0 is not available"
+  git -C "$repo" cat-file -e "$stage_a_merge^{commit}" 2>/dev/null || die "reviewed Stage A merge is not available"
+  git -C "$repo" cat-file -e "$stage_a_head^{commit}" 2>/dev/null || die "reviewed Stage A head is not available"
+
+  parent_count="$(git -C "$repo" rev-list --parents -n 1 "$stage_a_merge" | awk '{print NF - 1}')"
+  [[ "$parent_count" == "2" ]] || die "reviewed Stage A must be one merge commit"
+  [[ "$(git -C "$repo" rev-parse "$stage_a_merge^1")" == "$fork_tip" ]] ||
+    die "reviewed Stage A first parent is not immutable F0"
+  [[ "$(git -C "$repo" rev-parse "$stage_a_merge^2")" == "$stage_a_head" ]] ||
+    die "reviewed Stage A second parent is not the approved Stage A head"
+  git -C "$repo" merge-base --is-ancestor "$stage_a_merge" "$reviewed_base_tip" ||
+    die "reviewed base does not descend from the exact Stage A merge"
+
+  expected_paths="$(reviewed_base_paths)"
+  final_paths="$(git -C "$repo" diff --name-only "$fork_tip" "$reviewed_base_tip" | sorted_unique_lines)"
+  history_paths="$(git -C "$repo" log -m --format= --name-only "$fork_tip..$reviewed_base_tip" | awk 'NF' | sorted_unique_lines)"
+  [[ "$final_paths" == "$expected_paths" ]] || {
+    printf 'Expected reviewed-base delta paths:\n%s\nActual final delta paths:\n%s\n' \
+      "$expected_paths" "${final_paths:-<empty>}" >&2
+    die "reviewed-base final delta is not the approved five-path Stage A surface"
+  }
+  [[ "$history_paths" == "$expected_paths" ]] || {
+    printf 'Expected reviewed-base history paths:\n%s\nActual history paths:\n%s\n' \
+      "$expected_paths" "${history_paths:-<empty>}" >&2
+    die "reviewed-base history contains a change outside the approved Stage A surface"
+  }
+
+  for path in "${REVIEWED_BASE_PATHS[@]}"; do
+    require_regular_blob "$repo" "$reviewed_base_tip" "$path"
+  done
+}
+
+assert_stage_a_survives_pr_merge() {
+  local repo="$1"
+  local reviewed_base_tip="$2"
+  local baseline_commit="$3"
+  local merge_output
+  local synthetic_tree
+  local path
+
+  if ! merge_output="$(git -C "$repo" merge-tree --write-tree "$reviewed_base_tip" "$baseline_commit" 2>&1)"; then
+    printf '%s\n' "$merge_output" >&2
+    die "generated baseline does not merge cleanly into the reviewed base"
+  fi
+  synthetic_tree="$(printf '%s\n' "$merge_output" | awk 'NR == 1 {print $1}')"
+  [[ "$synthetic_tree" =~ ^[0-9a-f]{40}$ ]] || die "synthetic merge did not produce a full tree SHA"
+  git -C "$repo" cat-file -e "$synthetic_tree^{tree}" 2>/dev/null || die "synthetic merge tree is unavailable"
+
+  for path in "${REVIEWED_BASE_PATHS[@]}"; do
+    assert_path_matches "$repo" "$reviewed_base_tip" "$synthetic_tree" "$path"
+  done
+  printf '%s\n' "$synthetic_tree"
+}
+
 assert_expected_conflicts() {
   local repo="$1"
   local actual
@@ -183,11 +264,15 @@ write_manifest() {
   local tag_object="$4"
   local upstream_sha="$5"
   local fork_tip="$6"
-  local baseline_commit="$7"
-  local merge_base="$8"
-  local divergence="$9"
-  local decision="${10}"
-  local branch="${11}"
+  local reviewed_base_tip="$7"
+  local stage_a_merge="$8"
+  local stage_a_head="$9"
+  local baseline_commit="${10}"
+  local synthetic_merge_tree="${11}"
+  local merge_base="${12}"
+  local divergence="${13}"
+  local decision="${14}"
+  local branch="${15}"
 
   jq -n \
     --arg schemaVersion "1" \
@@ -195,7 +280,11 @@ write_manifest() {
     --arg upstreamTagObject "$tag_object" \
     --arg upstreamSha "$upstream_sha" \
     --arg forkTip "$fork_tip" \
+    --arg reviewedBaseTip "$reviewed_base_tip" \
+    --arg stageAMerge "$stage_a_merge" \
+    --arg stageAHead "$stage_a_head" \
     --arg baselineCommit "$baseline_commit" \
+    --arg syntheticMergeTree "$synthetic_merge_tree" \
     --arg mergeBase "$merge_base" \
     --arg divergence "$divergence" \
     --arg branch "$branch" \
@@ -227,7 +316,11 @@ write_manifest() {
       upstreamTagObject: $upstreamTagObject,
       upstreamSha: $upstreamSha,
       forkTip: $forkTip,
+      reviewedBaseTip: $reviewedBaseTip,
+      stageAMerge: $stageAMerge,
+      stageAHead: $stageAHead,
       baselineCommit: $baselineCommit,
+      syntheticMergeTree: $syntheticMergeTree,
       mergeBase: $mergeBase,
       divergence: $divergence,
       branch: $branch,
@@ -284,10 +377,14 @@ write_pr_body() {
     "| Upstream tag | `" + .upstreamTag + "` |\n" +
     "| Upstream tag object | `" + .upstreamTagObject + "` |\n" +
     "| Upstream commit (U) | `" + .upstreamSha + "` |\n" +
-    "| Verified fork tip (F0) | `" + .forkTip + "` |\n" +
+    "| Immutable fork tip (F0) | `" + .forkTip + "` |\n" +
+    "| Reviewed base tip | `" + .reviewedBaseTip + "` |\n" +
+    "| Reviewed Stage A merge | `" + .stageAMerge + "` |\n" +
+    "| Reviewed Stage A head | `" + .stageAHead + "` |\n" +
     "| Merge base | `" + .mergeBase + "` |\n" +
     "| Divergence (fork/upstream) | `" + .divergence + "` |\n" +
-    "| Baseline merge | `" + .baselineCommit + "` |\n\n" +
+    "| Baseline merge | `" + .baselineCommit + "` |\n" +
+    "| Synthetic main merge tree | `" + .syntheticMergeTree + "` |\n\n" +
     "### Protected paths\n\n| Path | Fork blob | Upstream blob | Final blob | Disposition | Validation |\n| --- | --- | --- | --- | --- | --- |\n" +
     ([.protectedPaths[] | "| `" + .path + "` | `" + .forkBlob + "` | `" + .upstreamBlob + "` | `" + .finalBlob + "` | `" + .disposition + "` | " + .validation + " |"] | join("\n")) +
     "\n\n### Classified baseline delta\n\n" +
@@ -314,6 +411,9 @@ main() {
   local upstream_tag="${UPSTREAM_TAG:-}"
   local expected_upstream_sha="${EXPECTED_UPSTREAM_SHA:-}"
   local expected_fork_tip="${EXPECTED_FORK_TIP:-}"
+  local expected_reviewed_base_tip="${EXPECTED_REVIEWED_BASE_TIP:-}"
+  local expected_stage_a_merge="${EXPECTED_STAGE_A_MERGE:-}"
+  local expected_stage_a_head="${EXPECTED_STAGE_A_HEAD:-}"
   local upstream_url="${UPSTREAM_URL:-$DEFAULT_UPSTREAM_URL}"
   local origin_remote="${ORIGIN_REMOTE:-$DEFAULT_ORIGIN_REMOTE}"
   local base_branch="${BASE_BRANCH:-main}"
@@ -326,19 +426,27 @@ main() {
   local tag_object
   local upstream_sha
   local fork_tip
+  local reviewed_base_tip
   local merge_base
   local divergence
   local worktree
   local baseline_commit
+  local synthetic_merge_tree
   local index_tree
   local decision
 
   [[ -n "$upstream_tag" ]] || die "UPSTREAM_TAG is required"
   [[ -n "$expected_upstream_sha" ]] || die "EXPECTED_UPSTREAM_SHA is required"
   [[ -n "$expected_fork_tip" ]] || die "EXPECTED_FORK_TIP is required"
+  [[ -n "$expected_reviewed_base_tip" ]] || die "EXPECTED_REVIEWED_BASE_TIP is required"
+  [[ -n "$expected_stage_a_merge" ]] || die "EXPECTED_STAGE_A_MERGE is required"
+  [[ -n "$expected_stage_a_head" ]] || die "EXPECTED_STAGE_A_HEAD is required"
   require_safe_tag "$upstream_tag"
   require_full_sha EXPECTED_UPSTREAM_SHA "$expected_upstream_sha"
   require_full_sha EXPECTED_FORK_TIP "$expected_fork_tip"
+  require_full_sha EXPECTED_REVIEWED_BASE_TIP "$expected_reviewed_base_tip"
+  require_full_sha EXPECTED_STAGE_A_MERGE "$expected_stage_a_merge"
+  require_full_sha EXPECTED_STAGE_A_HEAD "$expected_stage_a_head"
   [[ "$upstream_url" == "$DEFAULT_UPSTREAM_URL" || "${ALLOW_LOCAL_FIXTURE_URL:-0}" == "1" ]] ||
     die "UPSTREAM_URL must remain the canonical Infisical repository"
   [[ "$origin_remote" =~ ^[A-Za-z0-9._-]+$ ]] || die "invalid origin remote name"
@@ -351,9 +459,11 @@ main() {
 
   [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "tracked worktree changes are not allowed"
   git fetch --no-tags "$origin_remote" "+refs/heads/$base_branch:refs/remotes/$origin_remote/$base_branch"
-  fork_tip="$(git rev-parse "refs/remotes/$origin_remote/$base_branch^{commit}")"
-  [[ "$fork_tip" == "$expected_fork_tip" ]] ||
-    die "fork tip moved: expected $expected_fork_tip, found $fork_tip; fresh confirmation is required"
+  reviewed_base_tip="$(git rev-parse "refs/remotes/$origin_remote/$base_branch^{commit}")"
+  [[ "$reviewed_base_tip" == "$expected_reviewed_base_tip" ]] ||
+    die "reviewed base moved: expected $expected_reviewed_base_tip, found $reviewed_base_tip; fresh confirmation is required"
+  fork_tip="$expected_fork_tip"
+  assert_reviewed_base "$PWD" "$reviewed_base_tip" "$fork_tip" "$expected_stage_a_merge" "$expected_stage_a_head"
 
   if ! git show-ref --verify --quiet "$upstream_ref"; then
     git fetch --no-tags "$upstream_url" "refs/tags/$upstream_tag:$upstream_ref"
@@ -431,8 +541,11 @@ main() {
     log "prepared $sync_branch at $baseline_commit without pushing"
   fi
 
+  synthetic_merge_tree="$(assert_stage_a_survives_pr_merge "$PWD" "$reviewed_base_tip" "$baseline_commit")"
+
   write_manifest "$PWD" "$evidence_path" "$upstream_tag" "$tag_object" "$upstream_sha" "$fork_tip" \
-    "$baseline_commit" "$merge_base" "$divergence" "$decision" "$sync_branch"
+    "$reviewed_base_tip" "$expected_stage_a_merge" "$expected_stage_a_head" "$baseline_commit" \
+    "$synthetic_merge_tree" "$merge_base" "$divergence" "$decision" "$sync_branch"
   write_pr_body "$evidence_path" "$pr_body_path"
 
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
@@ -443,6 +556,8 @@ main() {
       printf 'upstream_tag_object=%s\n' "$tag_object"
       printf 'upstream_sha=%s\n' "$upstream_sha"
       printf 'fork_tip=%s\n' "$fork_tip"
+      printf 'reviewed_base_tip=%s\n' "$reviewed_base_tip"
+      printf 'synthetic_merge_tree=%s\n' "$synthetic_merge_tree"
       printf 'evidence_path=%s\n' "$evidence_path"
       printf 'pr_body_path=%s\n' "$pr_body_path"
     } >>"$GITHUB_OUTPUT"

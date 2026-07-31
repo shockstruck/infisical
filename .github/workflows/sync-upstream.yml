@@ -11,6 +11,10 @@ on:
                 description: Expected full peeled commit SHA for the canonical tag
                 required: true
                 type: string
+            expected_reviewed_base_sha:
+                description: Exact reviewed main commit containing only the approved Stage A path surface
+                required: true
+                type: string
 
 concurrency:
     group: upstream-sync-${{ inputs.upstream_tag }}-${{ inputs.expected_upstream_sha }}
@@ -30,6 +34,9 @@ jobs:
             UPSTREAM_TAG: ${{ inputs.upstream_tag }}
             EXPECTED_UPSTREAM_SHA: ${{ inputs.expected_upstream_sha }}
             EXPECTED_FORK_TIP: 2cc6bffc368cf365d0fcf018945587a94c34c5c8
+            EXPECTED_REVIEWED_BASE_TIP: ${{ inputs.expected_reviewed_base_sha }}
+            EXPECTED_STAGE_A_MERGE: 2355d6b952c93ea22b397e8af56a7ef059f6bc9a
+            EXPECTED_STAGE_A_HEAD: f67a7c9f8432734aa3e2a1851537f54d462a07ec
             BASE_BRANCH: main
             EXPECTED_APP_SLUG: ${{ vars.UPSTREAM_SYNC_APP_SLUG }}
             EXPECTED_APP_INSTALLATION_ID: "150211304"

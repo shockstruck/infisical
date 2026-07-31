@@ -58,11 +58,45 @@ prepare_fixture() {
   git -C "$ROOT/source" commit -m fork >/dev/null
   FORK_SHA="$(git -C "$ROOT/source" rev-parse HEAD)"
 
-  git -C "$ROOT/source" switch -c fork-conflict >/dev/null
+  git -C "$ROOT/source" switch -c stage-a "$FORK_SHA" >/dev/null
+  mkdir -p "$ROOT/source/.github/scripts"
+  printf 'prepare stage a\n' > "$ROOT/source/.github/scripts/prepare-upstream-sync.sh"
+  printf 'release stage a\n' > "$ROOT/source/.github/scripts/resolve-fork-release.sh"
+  printf 'policy stage a\n' > "$ROOT/source/.github/scripts/test-upstream-sync-policies.sh"
+  printf 'sync stage a\n' > "$ROOT/source/.github/workflows/sync-upstream.yml"
+  printf 'hardened fork publisher\n' > "$ROOT/source/.github/workflows/release-fork-ghcr.yml"
+  git -C "$ROOT/source" add .github
+  git -C "$ROOT/source" commit -m stage-a >/dev/null
+  STAGE_A_HEAD_SHA="$(git -C "$ROOT/source" rev-parse HEAD)"
+
+  git -C "$ROOT/source" switch -c reviewed-base "$FORK_SHA" >/dev/null
+  git -C "$ROOT/source" merge --no-ff stage-a -m 'merge stage a' >/dev/null
+  STAGE_A_MERGE_SHA="$(git -C "$ROOT/source" rev-parse HEAD)"
+  printf 'reviewed bridge\n' >> "$ROOT/source/.github/scripts/prepare-upstream-sync.sh"
+  git -C "$ROOT/source" add .github/scripts/prepare-upstream-sync.sh
+  git -C "$ROOT/source" commit -m reviewed-bridge >/dev/null
+  REVIEWED_BASE_SHA="$(git -C "$ROOT/source" rev-parse HEAD)"
+
+  git -C "$ROOT/source" switch -c fork-conflict "$FORK_SHA" >/dev/null
   printf 'fork conflict\n' > "$ROOT/source/unexpected.txt"
   git -C "$ROOT/source" add unexpected.txt
   git -C "$ROOT/source" commit -m fork-conflict >/dev/null
   FORK_CONFLICT_SHA="$(git -C "$ROOT/source" rev-parse HEAD)"
+
+  git -C "$ROOT/source" switch -c fork-conflict-stage-a "$FORK_CONFLICT_SHA" >/dev/null
+  mkdir -p "$ROOT/source/.github/scripts"
+  printf 'prepare conflict stage a\n' > "$ROOT/source/.github/scripts/prepare-upstream-sync.sh"
+  printf 'release conflict stage a\n' > "$ROOT/source/.github/scripts/resolve-fork-release.sh"
+  printf 'policy conflict stage a\n' > "$ROOT/source/.github/scripts/test-upstream-sync-policies.sh"
+  printf 'sync conflict stage a\n' > "$ROOT/source/.github/workflows/sync-upstream.yml"
+  printf 'hardened conflict publisher\n' > "$ROOT/source/.github/workflows/release-fork-ghcr.yml"
+  git -C "$ROOT/source" add .github
+  git -C "$ROOT/source" commit -m fork-conflict-stage-a >/dev/null
+  FORK_CONFLICT_STAGE_A_HEAD_SHA="$(git -C "$ROOT/source" rev-parse HEAD)"
+  git -C "$ROOT/source" switch -c fork-conflict-reviewed "$FORK_CONFLICT_SHA" >/dev/null
+  git -C "$ROOT/source" merge --no-ff fork-conflict-stage-a -m 'merge conflict stage a' >/dev/null
+  FORK_CONFLICT_STAGE_A_MERGE_SHA="$(git -C "$ROOT/source" rev-parse HEAD)"
+  FORK_CONFLICT_REVIEWED_SHA="$FORK_CONFLICT_STAGE_A_MERGE_SHA"
 
   git -C "$ROOT/source" switch -c upstream "$BASE_SHA" >/dev/null
   printf 'upstream=target\nshared-a\nshared-b\nshared-c\nfork=base\n' > "$ROOT/source/backend/src/ee/services/license/license-fns.ts"
@@ -86,7 +120,7 @@ prepare_fixture() {
 
   git init --bare "$ROOT/fork.git" >/dev/null
   git init --bare "$ROOT/upstream.git" >/dev/null
-  git -C "$ROOT/source" push "$ROOT/fork.git" "$FORK_SHA:refs/heads/main" >/dev/null
+  git -C "$ROOT/source" push "$ROOT/fork.git" "$REVIEWED_BASE_SHA:refs/heads/main" >/dev/null
   git -C "$ROOT/source" push "$ROOT/upstream.git" \
     refs/tags/v0.162.15 refs/tags/v0.162.16 >/dev/null
   git --git-dir="$ROOT/fork.git" symbolic-ref HEAD refs/heads/main
@@ -100,7 +134,10 @@ run_prepare() {
   local tag="$3"
   local upstream_sha="$4"
   local fork_sha="$5"
-  local output_prefix="$6"
+  local reviewed_base_sha="$6"
+  local stage_a_merge_sha="$7"
+  local stage_a_head_sha="$8"
+  local output_prefix="$9"
 
   (
     cd "$repo"
@@ -109,6 +146,9 @@ run_prepare() {
       UPSTREAM_TAG="$tag" \
       EXPECTED_UPSTREAM_SHA="$upstream_sha" \
       EXPECTED_FORK_TIP="$fork_sha" \
+      EXPECTED_REVIEWED_BASE_TIP="$reviewed_base_sha" \
+      EXPECTED_STAGE_A_MERGE="$stage_a_merge_sha" \
+      EXPECTED_STAGE_A_HEAD="$stage_a_head_sha" \
       ORIGIN_REMOTE="$remote" \
       EVIDENCE_PATH="$ROOT/$output_prefix.json" \
       PR_BODY_PATH="$ROOT/$output_prefix.md" \
@@ -163,21 +203,29 @@ make_tampered_merge() {
 }
 
 test_prepare_policy() {
-  run_prepare "$ROOT/work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" first
+  run_prepare "$ROOT/work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" \
+    "$REVIEWED_BASE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" first
   jq -e '
     .decision == "prepare" and
     .upstreamSha == $u and
     .forkTip == $f and
+    .reviewedBaseTip == $b and
+    .stageAMerge == $a and
+    (.syntheticMergeTree | test("^[0-9a-f]{40}$")) and
     (.protectedPaths | length) == 7 and
     ([.classifiedBaselineDelta[].path] | sort) == (["LICENSE", "backend/src/ee/LICENSE.md", ".github/workflows/release-fork-ghcr.yml"] | sort)
-  ' --arg u "$UPSTREAM_SHA" --arg f "$FORK_SHA" "$ROOT/first.json" >/dev/null
+  ' --arg u "$UPSTREAM_SHA" --arg f "$FORK_SHA" --arg b "$REVIEWED_BASE_SHA" \
+    --arg a "$STAGE_A_MERGE_SHA" "$ROOT/first.json" >/dev/null
   if git --git-dir="$ROOT/fork.git" show-ref --verify --quiet refs/heads/sync/upstream-v0.162.15; then
     die "no-push preparation changed the fixture remote"
   fi
 
   VALID_BASELINE="$(git -C "$ROOT/work" rev-parse refs/heads/sync/upstream-v0.162.15)"
+  [[ "$(git -C "$ROOT/work" rev-parse "$VALID_BASELINE^1")" == "$FORK_SHA" ]] ||
+    die "baseline first parent moved away from immutable F0"
   git -C "$ROOT/work" push origin refs/heads/sync/upstream-v0.162.15 >/dev/null
-  run_prepare "$ROOT/work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" rerun
+  run_prepare "$ROOT/work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" \
+    "$REVIEWED_BASE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" rerun
   jq -e '.decision == "noop"' "$ROOT/rerun.json" >/dev/null
 
   clone_scenario moved
@@ -187,19 +235,43 @@ test_prepare_policy() {
   git -C "$ROOT/moved-work" add moved.txt
   git -C "$ROOT/moved-work" commit -m moved >/dev/null
   git -C "$ROOT/moved-work" push origin HEAD:refs/heads/main >/dev/null
-  expect_failure moved-target run_prepare "$ROOT/moved-work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" moved-target
+  MOVED_BASE_SHA="$(git -C "$ROOT/moved-work" rev-parse HEAD)"
+  expect_failure moved-target run_prepare "$ROOT/moved-work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" \
+    "$MOVED_BASE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" moved-target
+
+  clone_scenario reverted
+  git -C "$ROOT/reverted-work" config user.name fixture
+  git -C "$ROOT/reverted-work" config user.email fixture@example.com
+  printf 'reverted\n' > "$ROOT/reverted-work/reverted.txt"
+  git -C "$ROOT/reverted-work" add reverted.txt
+  git -C "$ROOT/reverted-work" commit -m reverted-add >/dev/null
+  git -C "$ROOT/reverted-work" rm reverted.txt >/dev/null
+  git -C "$ROOT/reverted-work" commit -m reverted-remove >/dev/null
+  git -C "$ROOT/reverted-work" push origin HEAD:refs/heads/main >/dev/null
+  REVERTED_BASE_SHA="$(git -C "$ROOT/reverted-work" rev-parse HEAD)"
+  expect_failure reverted-history run_prepare "$ROOT/reverted-work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" \
+    "$REVERTED_BASE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" reverted-history
+
+  clone_scenario base-mismatch
+  expect_failure reviewed-base-mismatch run_prepare "$ROOT/base-mismatch-work" origin v0.162.15 \
+    "$UPSTREAM_SHA" "$FORK_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" base-mismatch
 
   clone_scenario collision
   git -C "$ROOT/collision-work" push origin "$FORK_SHA:refs/heads/sync/upstream-v0.162.15" >/dev/null
-  expect_failure branch-collision run_prepare "$ROOT/collision-work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" branch-collision
+  expect_failure branch-collision run_prepare "$ROOT/collision-work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" \
+    "$REVIEWED_BASE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" branch-collision
 
   clone_scenario unexpected
-  git -C "$ROOT/unexpected-work" fetch "$ROOT/source" "$FORK_CONFLICT_SHA" >/dev/null
-  git -C "$ROOT/unexpected-work" push origin "$FORK_CONFLICT_SHA:refs/heads/main" >/dev/null
-  expect_failure unexpected-conflict run_prepare "$ROOT/unexpected-work" origin v0.162.16 "$CONFLICT_SHA" "$FORK_CONFLICT_SHA" unexpected-conflict
+  git --git-dir="$ROOT/unexpected.git" fetch "$ROOT/source" "$FORK_CONFLICT_REVIEWED_SHA" >/dev/null
+  git --git-dir="$ROOT/unexpected.git" update-ref refs/heads/main "$FORK_CONFLICT_REVIEWED_SHA"
+  expect_failure unexpected-conflict run_prepare "$ROOT/unexpected-work" origin v0.162.16 "$CONFLICT_SHA" \
+    "$FORK_CONFLICT_SHA" "$FORK_CONFLICT_REVIEWED_SHA" "$FORK_CONFLICT_STAGE_A_MERGE_SHA" \
+    "$FORK_CONFLICT_STAGE_A_HEAD_SHA" unexpected-conflict
 
   clone_scenario tag-mismatch
-  expect_failure tag-sha-mismatch run_prepare "$ROOT/tag-mismatch-work" origin v0.162.15 "0000000000000000000000000000000000000000" "$FORK_SHA" tag-mismatch
+  expect_failure tag-sha-mismatch run_prepare "$ROOT/tag-mismatch-work" origin v0.162.15 \
+    "0000000000000000000000000000000000000000" "$FORK_SHA" "$REVIEWED_BASE_SHA" \
+    "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" tag-mismatch
 
   local scenario
   local mutation
@@ -212,7 +284,8 @@ test_prepare_policy() {
       extra-delta) mutation=extra-delta ;;
     esac
     make_tampered_merge "$ROOT/$scenario-work" "$mutation" refs/heads/sync/upstream-v0.162.15
-    expect_failure "$scenario" run_prepare "$ROOT/$scenario-work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" "$scenario"
+    expect_failure "$scenario" run_prepare "$ROOT/$scenario-work" origin v0.162.15 "$UPSTREAM_SHA" "$FORK_SHA" \
+      "$REVIEWED_BASE_SHA" "$STAGE_A_MERGE_SHA" "$STAGE_A_HEAD_SHA" "$scenario"
   done
 
   jq 'del(.protectedPaths[0])' "$ROOT/first.json" > "$ROOT/omitted.json"
@@ -258,6 +331,14 @@ main() {
   BASE_SHA=""
   FORK_SHA=""
   FORK_CONFLICT_SHA=""
+  FORK_CONFLICT_STAGE_A_HEAD_SHA=""
+  FORK_CONFLICT_STAGE_A_MERGE_SHA=""
+  FORK_CONFLICT_REVIEWED_SHA=""
+  STAGE_A_HEAD_SHA=""
+  STAGE_A_MERGE_SHA=""
+  REVIEWED_BASE_SHA=""
+  MOVED_BASE_SHA=""
+  REVERTED_BASE_SHA=""
   UPSTREAM_SHA=""
   CONFLICT_SHA=""
   VALID_BASELINE=""
