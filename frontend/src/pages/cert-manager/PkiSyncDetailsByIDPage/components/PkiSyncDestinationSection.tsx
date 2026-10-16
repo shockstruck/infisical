@@ -1,11 +1,8 @@
-/* eslint-disable jsx-a11y/label-has-associated-control */
 import { ReactNode } from "react";
-import { faEdit } from "@fortawesome/free-solid-svg-icons";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 
-import { IconButton } from "@app/components/v2";
+import { Detail, DetailGroupHeader, DetailLabel, DetailValue } from "@app/components/v3";
 import { PKI_SYNC_MAP } from "@app/helpers/pkiSyncs";
-import { PkiSync, TPkiSync, usePkiSyncPermissions } from "@app/hooks/api/pkiSyncs";
+import { PkiSync, TPkiSync } from "@app/hooks/api/pkiSyncs";
 
 import {
   AwsCertificateManagerPkiSyncDestinationSection,
@@ -14,26 +11,20 @@ import {
   AzureKeyVaultPkiSyncDestinationSection,
   ChefPkiSyncDestinationSection,
   F5BigIpPkiSyncDestinationSection,
+  GcpCertificateManagerPkiSyncDestinationSection,
   KempLoadMasterPkiSyncDestinationSection,
   LinuxServerPkiSyncDestinationSection,
   NetScalerPkiSyncDestinationSection,
   NutanixPrismCentralPkiSyncDestinationSection,
+  PaloAltoNetworksPkiSyncDestinationSection,
   WindowsServerPkiSyncDestinationSection
 } from "./PkiSyncDestinationSection/index";
 
-const GenericFieldLabel = ({ label, children }: { label: string; children: React.ReactNode }) => (
-  <div className="mb-4">
-    <p className="text-sm font-medium text-mineshaft-300">{label}</p>
-    <div className="text-sm text-mineshaft-300">{children}</div>
-  </div>
-);
-
 type Props = {
   pkiSync: TPkiSync;
-  onEditDestination: VoidFunction;
 };
 
-export const PkiSyncDestinationSection = ({ pkiSync, onEditDestination }: Props) => {
+export const PkiSyncDestinationSection = ({ pkiSync }: Props) => {
   const { destination } = pkiSync;
 
   const destinationDetails = PKI_SYNC_MAP[destination];
@@ -55,8 +46,15 @@ export const PkiSyncDestinationSection = ({ pkiSync, onEditDestination }: Props)
     case PkiSync.Chef:
       DestinationComponents = <ChefPkiSyncDestinationSection pkiSync={pkiSync} />;
       break;
+    case PkiSync.GcpCertificateManager:
+      DestinationComponents = <GcpCertificateManagerPkiSyncDestinationSection pkiSync={pkiSync} />;
+      break;
     case PkiSync.NetScaler:
       DestinationComponents = <NetScalerPkiSyncDestinationSection pkiSync={pkiSync} />;
+      break;
+    case PkiSync.PaloAltoNetworks:
+    case PkiSync.PaloAltoNetworksSslTlsProfile:
+      DestinationComponents = <PaloAltoNetworksPkiSyncDestinationSection pkiSync={pkiSync} />;
       break;
     case PkiSync.F5BigIp:
       DestinationComponents = <F5BigIpPkiSyncDestinationSection pkiSync={pkiSync} />;
@@ -74,32 +72,17 @@ export const PkiSyncDestinationSection = ({ pkiSync, onEditDestination }: Props)
       DestinationComponents = <NutanixPrismCentralPkiSyncDestinationSection pkiSync={pkiSync} />;
       break;
     default:
-      // For future destinations, return null (no additional fields to show)
       DestinationComponents = null;
   }
 
-  const { canEdit } = usePkiSyncPermissions(pkiSync);
-
   return (
-    <div className="flex w-full flex-col gap-3 rounded-lg border border-mineshaft-600 bg-mineshaft-900 px-4 py-3">
-      <div className="flex items-center justify-between border-b border-mineshaft-400 pb-2">
-        <h3 className="text-lg font-medium text-mineshaft-100">Destination Configuration</h3>
-        <IconButton
-          variant="plain"
-          colorSchema="secondary"
-          isDisabled={!canEdit}
-          ariaLabel="Edit destination"
-          onClick={onEditDestination}
-        >
-          <FontAwesomeIcon icon={faEdit} />
-        </IconButton>
-      </div>
-      <div className="flex w-full flex-wrap gap-8 pt-2">
-        <GenericFieldLabel label={`${destinationDetails.name} Connection`}>
-          {pkiSync.appConnectionName || "Default Connection"}
-        </GenericFieldLabel>
-        {DestinationComponents}
-      </div>
-    </div>
+    <>
+      <DetailGroupHeader>Destination Configuration</DetailGroupHeader>
+      <Detail>
+        <DetailLabel>{`${destinationDetails.name} Connection`}</DetailLabel>
+        <DetailValue>{pkiSync.appConnectionName || "Default Connection"}</DetailValue>
+      </Detail>
+      {DestinationComponents}
+    </>
   );
 };

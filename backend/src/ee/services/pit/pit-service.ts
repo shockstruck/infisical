@@ -9,6 +9,7 @@ import { BadRequestError, NotFoundError } from "@app/lib/errors";
 import { logger } from "@app/lib/logger";
 import { ActorAuthMethod, ActorType } from "@app/services/auth/auth-type";
 import { TFolderCommitDALFactory } from "@app/services/folder-commit/folder-commit-dal";
+import { summarizeCommitChanges } from "@app/services/folder-commit/folder-commit-fns";
 import {
   ResourceType,
   TCommitResourceChangeDTO,
@@ -29,6 +30,7 @@ import { TSecretV2BridgeServiceFactory } from "@app/services/secret-v2-bridge/se
 import { SecretOperations, SecretUpdateMode } from "@app/services/secret-v2-bridge/secret-v2-bridge-types";
 
 import { TPermissionServiceFactory } from "../permission/permission-service-types";
+import { shouldApplyPolicy } from "../secret-approval-policy/secret-approval-policy-fns";
 import { TSecretApprovalPolicyServiceFactory } from "../secret-approval-policy/secret-approval-policy-service";
 import { TSecretApprovalRequestServiceFactory } from "../secret-approval-request/secret-approval-request-service";
 
@@ -110,7 +112,8 @@ export const pitServiceFactory = ({
     offset,
     limit,
     search,
-    sort
+    sort,
+    authorFilter
   }: {
     actor: ActorType;
     actorId: string;
@@ -123,6 +126,7 @@ export const pitServiceFactory = ({
     limit: number;
     search?: string;
     sort: "asc" | "desc";
+    authorFilter?: { actorId?: string; actorType?: string };
   }) => {
     const result = await folderCommitService.getCommitsForFolder({
       actor,
@@ -135,17 +139,49 @@ export const pitServiceFactory = ({
       offset,
       limit,
       search,
-      sort
+      sort,
+      authorFilter
     });
 
     return {
-      commits: result.commits.map((commit) => ({
+      commits: result.commits.map(({ changeCounts, ...commit }) => ({
         ...commit,
-        commitId: commit.commitId.toString()
+        commitId: commit.commitId.toString(),
+        summary: summarizeCommitChanges(changeCounts)
       })),
       total: result.total,
       hasMore: result.hasMore
     };
+  };
+
+  const getCommitAuthorsForFolder = async ({
+    actor,
+    actorId,
+    actorOrgId,
+    actorAuthMethod,
+    projectId,
+    environment,
+    path
+  }: {
+    actor: ActorType;
+    actorId: string;
+    actorOrgId: string;
+    actorAuthMethod: ActorAuthMethod;
+    projectId: string;
+    environment: string;
+    path: string;
+  }) => {
+    const authors = await folderCommitService.getCommitAuthorsForFolder({
+      actor,
+      actorId,
+      actorOrgId,
+      actorAuthMethod,
+      projectId,
+      environment,
+      path
+    });
+
+    return { authors };
   };
 
   const getCommitChanges = async ({
@@ -218,9 +254,7 @@ export const pitServiceFactory = ({
     projectId,
     commitId,
     folderId,
-    environment,
-    deepRollback,
-    secretPath
+    deepRollback
   }: {
     actor: ActorType;
     actorId: string;
@@ -229,9 +263,7 @@ export const pitServiceFactory = ({
     projectId: string;
     commitId: string;
     folderId: string;
-    environment: string;
     deepRollback: boolean;
-    secretPath: string;
   }) => {
     const latestCommit = await folderCommitService.getLatestCommit({
       folderId,
@@ -251,14 +283,28 @@ export const pitServiceFactory = ({
       projectId
     });
 
+    if (targetCommit.folderId !== folderId) {
+      throw new BadRequestError({
+        message: `Commit with ID '${commitId}' does not belong to folder with ID '${folderId}'`
+      });
+    }
+
     const env = await projectEnvDAL.findOne({
       projectId,
-      slug: environment
+      id: targetCommit.envId
     });
 
     if (!latestCommit) {
       throw new NotFoundError({ message: "Latest commit not found" });
     }
+
+    const folderData = await folderService.getFolderById({
+      actor,
+      actorId,
+      actorOrgId,
+      actorAuthMethod,
+      id: folderId
+    });
 
     let diffs;
     if (deepRollback) {
@@ -268,19 +314,11 @@ export const pitServiceFactory = ({
         projectId
       });
     } else {
-      const folderData = await folderService.getFolderById({
-        actor,
-        actorId,
-        actorOrgId,
-        actorAuthMethod,
-        id: folderId
-      });
-
       diffs = [
         {
           folderId: folderData.id,
           folderName: folderData.name,
-          folderPath: secretPath,
+          folderPath: folderData.path,
           changes: await folderCommitService.compareFolderStates({
             targetCommitId: commitId,
             currentCommitId: latestCommit.id
@@ -322,7 +360,7 @@ export const pitServiceFactory = ({
       }
     }
 
-    return diffs;
+    return { diffs, environment: env.slug, folderPath: folderData.path };
   };
 
   const rollbackToCommit = async ({
@@ -334,8 +372,7 @@ export const pitServiceFactory = ({
     commitId,
     folderId,
     deepRollback,
-    message,
-    environment
+    message
   }: {
     actor: ActorType;
     actorId: string;
@@ -346,7 +383,6 @@ export const pitServiceFactory = ({
     folderId: string;
     deepRollback: boolean;
     message?: string;
-    environment: string;
   }) => {
     const [folderWithPath] = await folderDAL.findSecretPathByFolderIds(projectId, [folderId]);
     if (!folderWithPath) {
@@ -366,7 +402,7 @@ export const pitServiceFactory = ({
       ForbiddenError.from(userPermission).throwUnlessCan(
         ProjectPermissionCommitsActions.PerformRollback,
         subject(ProjectPermissionSub.Commits, {
-          environment,
+          environment: folderWithPath.environmentSlug,
           secretPath: folderWithPath.path
         })
       );
@@ -375,7 +411,7 @@ export const pitServiceFactory = ({
       ForbiddenError.from(userPermission).throwUnlessCan(
         ProjectPermissionCommitsActions.PerformRollback,
         subject(ProjectPermissionSub.Commits, {
-          environment,
+          environment: folderWithPath.environmentSlug,
           secretPath: deeperPath
         })
       );
@@ -383,7 +419,7 @@ export const pitServiceFactory = ({
       ForbiddenError.from(userPermission).throwUnlessCan(
         ProjectPermissionCommitsActions.PerformRollback,
         subject(ProjectPermissionSub.Commits, {
-          environment,
+          environment: folderWithPath.environmentSlug,
           secretPath: folderWithPath.path
         })
       );
@@ -415,7 +451,7 @@ export const pitServiceFactory = ({
 
     const env = await projectEnvDAL.findOne({
       projectId,
-      slug: environment
+      slug: folderWithPath.environmentSlug
     });
 
     if (!targetCommit || targetCommit.folderId !== folderId || targetCommit.envId !== env.id) {
@@ -624,10 +660,7 @@ export const pitServiceFactory = ({
     message: string;
     changes: TProcessNewCommitRawDTO;
   }) => {
-    const policy =
-      actor === ActorType.USER
-        ? await secretApprovalPolicyService.getSecretApprovalPolicy(projectId, environment, secretPath)
-        : undefined;
+    const policy = await secretApprovalPolicyService.getSecretApprovalPolicy(projectId, environment, secretPath);
     const secretMutationEvents: Event[] = [];
 
     const project = await projectDAL.findById(projectId);
@@ -769,7 +802,7 @@ export const pitServiceFactory = ({
         folderChanges.delete.push(...deletedFolders.folders.map((folder) => folder.id));
       }
 
-      if (policy) {
+      if (shouldApplyPolicy(policy, actor)) {
         // When a policy exists, secret changes go through approval workflow
         // but folder changes should still be committed immediately since they're not affected by approval policies
         let commitId: string | undefined;
@@ -972,6 +1005,7 @@ export const pitServiceFactory = ({
   return {
     getCommitsCount,
     getCommitsForFolder,
+    getCommitAuthorsForFolder,
     getCommitChanges,
     compareCommitChanges,
     rollbackToCommit,

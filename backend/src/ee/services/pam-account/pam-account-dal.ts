@@ -5,7 +5,8 @@ import { TableName, TPamAccounts } from "@app/db/schemas";
 import { sanitizeSqlLikeString } from "@app/lib/fn";
 import { ormify } from "@app/lib/knex";
 
-import { PamAccountType } from "../pam/pam-enums";
+import { PamAccountType, PamHeartbeatStatus } from "../pam/pam-enums";
+import { computeNextHeartbeatAt, heartbeatJitterCapSeconds } from "../pam-account-heartbeat/pam-heartbeat-fns";
 import {
   ACCOUNT_NEEDS_ROTATION_ACCOUNT_SQL,
   ACCOUNT_WILL_ROTATE_SQL,
@@ -16,7 +17,7 @@ import {
 } from "../pam-account-rotation/pam-rotation-fns";
 import { PamTemplateSettingsSchema } from "../pam-account-template/pam-account-template-schemas";
 import { PamRecordingStorageBackend } from "../pam-session-recording/pam-recording-enums";
-import { ACCOUNT_TYPE_CONFIGS } from "./pam-account-schemas";
+import { ACCOUNT_TYPE_CONFIGS, accountTypeRequiresCredential } from "./pam-account-schemas";
 
 const ROTATABLE_TYPE_VALUES = ROTATABLE_ACCOUNT_TYPES as readonly string[];
 
@@ -38,12 +39,36 @@ const gatewayExemptAccountTypes = (Object.entries(ACCOUNT_TYPE_CONFIGS) as [stri
   .map(([type]) => `'${type}'`)
   .join(", ");
 
+// Derived from accountTypeRequiresCredential so this predicate cannot drift from the TypeScript one in
+// getAccountAccessibilityIssues. A type that is reachable without credentials (Redis) has
+// credentialConfigured false on every account, so requiring it here would hide those accounts from every
+// accessible listing while the dashboard still showed them as launchable.
+const credentialExemptAccountTypes = Object.values(PamAccountType)
+  .filter((type) => !accountTypeRequiresCredential(type))
+  .map((type) => `'${type}'`)
+  .join(", ");
+
+// Guarded because an empty exemption list would render as `type in ()`, which is a syntax error rather
+// than a no-op.
+const credentialConfiguredSql = (accountTable: string, templateTable: string): string =>
+  credentialExemptAccountTypes
+    ? `("${templateTable}"."type" in (${credentialExemptAccountTypes})
+      or "${accountTable}"."credentialConfigured" = true)`
+    : `"${accountTable}"."credentialConfigured" = true`;
+
+export const staleAccountExistsSql = (accountTable: string): string =>
+  `exists (
+    select 1 from "${TableName.PamDiscoveredAccount}"
+    where "${TableName.PamDiscoveredAccount}"."importedAccountId" = "${accountTable}"."id"
+      and "${TableName.PamDiscoveredAccount}"."isStale" = true
+  )`;
+
 export const accountAccessibilitySql = (accountTable: string, templateTable: string): string =>
   `(
     ("${templateTable}"."type" in (${gatewayExemptAccountTypes})
       or "${accountTable}"."gatewayId" is not null or "${accountTable}"."gatewayPoolId" is not null
       or "${templateTable}"."gatewayId" is not null or "${templateTable}"."gatewayPoolId" is not null)
-    and "${accountTable}"."credentialConfigured" = true
+    and ${credentialConfiguredSql(accountTable, templateTable)}
     and ("${templateTable}"."type" not in (${recordingRequiredAccountTypes})
       or (
         "${templateTable}"."settings"->>'recordingStorageBackend' = '${PamRecordingStorageBackend.AwsS3}'
@@ -58,6 +83,7 @@ export const accountAccessibilitySql = (accountTable: string, templateTable: str
 
 type TPamAccountTemplateInheritedFields = {
   credentialConfigured: boolean;
+  encryptedCredentials: Buffer;
   templateGatewayId: string | null;
   templateGatewayPoolId: string | null;
   templateRecordingConnectionId: string | null;
@@ -77,6 +103,7 @@ export type TPamAccountListItem = Pick<
   | "gatewayPoolId"
   | "recordingConnectionId"
   | "settingsOverrides"
+  | "heartbeatStatus"
   | "createdAt"
   | "updatedAt"
 > &
@@ -84,6 +111,8 @@ export type TPamAccountListItem = Pick<
     accountType: string;
     templateName: string;
     folderName: string | null;
+    isStale: boolean;
+    heartbeatEnabled: boolean;
   };
 
 export type TPamAccountDetail = TPamAccounts &
@@ -93,7 +122,10 @@ export type TPamAccountDetail = TPamAccounts &
     templatePolicies: unknown;
     templateSettings: unknown;
     folderName: string | null;
+    isStale: boolean;
   };
+
+const effectiveGatewayIdSql = `coalesce("${TableName.PamAccount}"."gatewayId", "${TableName.PamAccountTemplate}"."gatewayId")`;
 
 export type TPamAccountDALFactory = ReturnType<typeof pamAccountDALFactory>;
 
@@ -165,6 +197,7 @@ export const pamAccountDALFactory = (db: TDbClient) => {
         `${TableName.PamAccount}.recordingConnectionId`,
         `${TableName.PamAccount}.settingsOverrides`,
         `${TableName.PamAccount}.credentialConfigured`,
+        `${TableName.PamAccount}.encryptedCredentials`,
         `${TableName.PamAccount}.createdAt`,
         `${TableName.PamAccount}.updatedAt`,
         `${TableName.PamAccountTemplate}.type as accountType`,
@@ -174,7 +207,13 @@ export const pamAccountDALFactory = (db: TDbClient) => {
         `${TableName.PamAccountTemplate}.gatewayId as templateGatewayId`,
         `${TableName.PamAccountTemplate}.gatewayPoolId as templateGatewayPoolId`,
         `${TableName.PamAccountTemplate}.recordingConnectionId as templateRecordingConnectionId`,
-        `${TableName.PamFolder}.name as folderName`
+        `${TableName.PamFolder}.name as folderName`,
+        `${TableName.PamAccount}.heartbeatStatus`,
+        db.raw(
+          `("${TableName.PamAccountTemplate}"."settings"->'heartbeat'->>'enabled' = 'true'
+            and "${TableName.PamAccountTemplate}"."settings"->'heartbeat'->>'intervalSeconds' is not null) as "heartbeatEnabled"`
+        ),
+        db.raw(`${staleAccountExistsSql(TableName.PamAccount)} as "isStale"`)
       )
       .orderBy(`${TableName.PamFolder}.name`, "asc")
       .orderBy(`${TableName.PamAccount}.name`, "asc");
@@ -199,7 +238,8 @@ export const pamAccountDALFactory = (db: TDbClient) => {
     `${TableName.PamAccountTemplate}.gatewayId as templateGatewayId`,
     `${TableName.PamAccountTemplate}.gatewayPoolId as templateGatewayPoolId`,
     `${TableName.PamAccountTemplate}.recordingConnectionId as templateRecordingConnectionId`,
-    `${TableName.PamFolder}.name as folderName`
+    `${TableName.PamFolder}.name as folderName`,
+    db.raw(`${staleAccountExistsSql(TableName.PamAccount)} as "isStale"`)
   ];
 
   const findByIdWithDetails = async (accountId: string, tx?: Knex): Promise<TPamAccountDetail | null> => {
@@ -250,6 +290,95 @@ export const pamAccountDALFactory = (db: TDbClient) => {
   const countAccountsToRotate = async (now: Date, tx?: Knex): Promise<number> => {
     const result = await dueRotationQuery(now, tx).count<[{ count: string }]>(`${TableName.PamAccount}.id`);
     return Number(result[0]?.count ?? 0);
+  };
+
+  const dueHeartbeatQuery = (now: Date, tx?: Knex) =>
+    (tx || db.replicaNode())(TableName.PamAccount)
+      .join(TableName.PamAccountTemplate, `${TableName.PamAccount}.templateId`, `${TableName.PamAccountTemplate}.id`)
+      .join(TableName.Project, `${TableName.PamAccount}.projectId`, `${TableName.Project}.id`)
+      .whereNull(`${TableName.Project}.deleteAfter`)
+      .whereNotNull(`${TableName.PamAccount}.nextHeartbeatAt`)
+      .where(`${TableName.PamAccount}.nextHeartbeatAt`, "<=", now)
+      // Both halves of isHeartbeatScheduled: an enabled config with no interval is manual-only.
+      .whereRaw(`"${TableName.PamAccountTemplate}"."settings"->'heartbeat'->>'enabled' = 'true'`)
+      .whereRaw(`"${TableName.PamAccountTemplate}"."settings"->'heartbeat'->>'intervalSeconds' is not null`);
+
+  const findAccountsToHeartbeat = async (now: Date, limit: number, tx?: Knex): Promise<TPamAccountDetail[]> => {
+    return (await dueHeartbeatQuery(now, tx)
+      .leftJoin(TableName.PamFolder, `${TableName.PamAccount}.folderId`, `${TableName.PamFolder}.id`)
+      .orderBy(`${TableName.PamAccount}.nextHeartbeatAt`, "asc")
+      .limit(limit)
+      .select(detailSelect)) as unknown as TPamAccountDetail[];
+  };
+
+  const countAccountsToHeartbeat = async (now: Date, tx?: Knex): Promise<number> => {
+    const result = await dueHeartbeatQuery(now, tx).count<[{ count: string }]>(`${TableName.PamAccount}.id`);
+    return Number(result[0]?.count ?? 0);
+  };
+
+  // Accounts stopped by a rejected credential stay stopped: a settings change is not what clears that.
+  const reconcileHeartbeatScheduleForTemplate = async (
+    templateId: string,
+    opts?: { rescheduleAll?: boolean },
+    tx?: Knex
+  ): Promise<void> => {
+    const dbClient = tx || db;
+    const template = await dbClient(TableName.PamAccountTemplate)
+      .where({ id: templateId })
+      .first<{ settings: unknown } | undefined>("settings");
+    if (!template) return;
+
+    const heartbeat = PamTemplateSettingsSchema.safeParse(template.settings).data?.heartbeat;
+
+    if (!heartbeat?.enabled || heartbeat.intervalSeconds == null) {
+      await dbClient(TableName.PamAccount)
+        .where({ templateId })
+        .whereNotNull("nextHeartbeatAt")
+        .update({ nextHeartbeatAt: null });
+      return;
+    }
+
+    const { intervalSeconds } = heartbeat;
+    const jitterCapSeconds = heartbeatJitterCapSeconds(intervalSeconds);
+
+    // NULL-safe on purpose: a never-checked account has a null status, which `whereNot` would drop.
+    const update = dbClient(TableName.PamAccount)
+      .where({ templateId })
+      .whereRaw(`("heartbeatStatus" is null or "heartbeatStatus" <> ?)`, [PamHeartbeatStatus.InvalidCredentials]);
+    if (!opts?.rescheduleAll) {
+      void update.whereNull("nextHeartbeatAt");
+    }
+    await update.update({
+      nextHeartbeatAt: dbClient.raw(
+        `GREATEST(COALESCE(??, now()) + make_interval(secs => ?), now()) + make_interval(secs => floor(random() * ?)::int)`,
+        ["lastHeartbeatAt", intervalSeconds, jitterCapSeconds]
+      ) as unknown as Date
+    });
+  };
+
+  const reconcileHeartbeatScheduleForAccount = async (accountId: string, tx?: Knex): Promise<void> => {
+    const account = await findByIdWithDetails(accountId, tx ?? db);
+    if (!account) return;
+
+    const heartbeat = PamTemplateSettingsSchema.safeParse(account.templateSettings).data?.heartbeat;
+    const current = account.nextHeartbeatAt ?? null;
+
+    let nextHeartbeatAt: Date | null = current;
+    if (!heartbeat?.enabled || heartbeat.intervalSeconds == null) {
+      nextHeartbeatAt = null;
+    } else if (!current && account.heartbeatStatus === PamHeartbeatStatus.InvalidCredentials) {
+      nextHeartbeatAt = null;
+    } else if (!current) {
+      nextHeartbeatAt = computeNextHeartbeatAt({
+        anchor: account.lastHeartbeatAt ?? null,
+        intervalSeconds: heartbeat.intervalSeconds,
+        now: new Date()
+      });
+    }
+
+    if ((nextHeartbeatAt?.getTime() ?? null) !== (current?.getTime() ?? null)) {
+      await (tx || db)(TableName.PamAccount).where({ id: accountId }).update({ nextHeartbeatAt });
+    }
   };
 
   // Total PAM accounts across the org's projects (excluding soft-deleted projects), used to enforce the
@@ -374,13 +503,44 @@ export const pamAccountDALFactory = (db: TDbClient) => {
     }
   };
 
+  const findByGatewayId = async (gatewayId: string, tx?: Knex) => {
+    const docs = await (tx || db.replicaNode())(TableName.PamAccount)
+      .join(TableName.PamAccountTemplate, `${TableName.PamAccount}.templateId`, `${TableName.PamAccountTemplate}.id`)
+      .leftJoin(TableName.PamFolder, `${TableName.PamAccount}.folderId`, `${TableName.PamFolder}.id`)
+      .whereRaw(`${effectiveGatewayIdSql} = ?`, [gatewayId])
+      .select(
+        `${TableName.PamAccount}.id`,
+        `${TableName.PamAccount}.name`,
+        `${TableName.PamAccountTemplate}.type as accountType`,
+        `${TableName.PamFolder}.name as folderName`
+      );
+
+    return docs as { id: string; name: string; accountType: string; folderName: string | null }[];
+  };
+
+  const countByGatewayIds = async (gatewayIds: string[], tx?: Knex) =>
+    (await (tx || db.replicaNode())(TableName.PamAccount)
+      .join(TableName.PamAccountTemplate, `${TableName.PamAccount}.templateId`, `${TableName.PamAccountTemplate}.id`)
+      .whereRaw(`${effectiveGatewayIdSql} = ANY(?::uuid[])`, [gatewayIds])
+      .groupByRaw(effectiveGatewayIdSql)
+      .select(db.raw(`${effectiveGatewayIdSql} as id`), db.raw("count(*)::int as count"))) as {
+      id: string;
+      count: number;
+    }[];
+
   return {
     ...orm,
+    findByGatewayId,
+    countByGatewayIds,
     findAccessible,
     findByIdWithDetails,
     findByIdsWithDetails,
     findAccountsToRotate,
     countAccountsToRotate,
+    findAccountsToHeartbeat,
+    countAccountsToHeartbeat,
+    reconcileHeartbeatScheduleForTemplate,
+    reconcileHeartbeatScheduleForAccount,
     countByOrgId,
     findRotationCandidates,
     reconcileRotationScheduleForTemplate,

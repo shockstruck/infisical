@@ -137,7 +137,7 @@ export const InviteMemberModal = ({ isOpen, onOpenChange }: Props) => {
         onOpenChange(open);
       }}
     >
-      <DialogContent className="overflow-visible sm:max-w-xl">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>Add Member</DialogTitle>
           <DialogDescription>Add existing organization members.</DialogDescription>
@@ -175,8 +175,10 @@ export const InviteMemberModal = ({ isOpen, onOpenChange }: Props) => {
           {requesterEmail && !requesterStatus.isProjectUser && requesterStatus.userId && (
             <Alert>
               <AlertDescription>
-                Assign a role to provide access to requesting user{" "}
-                <b>{requesterStatus.userLabel}</b>.
+                <p>
+                  Assign a role to provide access to requesting user{" "}
+                  <b>{requesterStatus.userLabel}</b>.
+                </p>
               </AlertDescription>
             </Alert>
           )}

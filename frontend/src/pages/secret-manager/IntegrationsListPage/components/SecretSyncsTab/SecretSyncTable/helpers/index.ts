@@ -178,6 +178,10 @@ export const getSecretSyncDestinationColValues = (secretSync: TSecretSync) => {
       primaryText = destinationConfig.scriptId;
       secondaryText = "Script ID";
       break;
+    case SecretSync.CloudflareSecretsStore:
+      primaryText = destinationConfig.storeName || destinationConfig.storeId;
+      secondaryText = "Secrets Store";
+      break;
     case SecretSync.Zabbix:
       if (destinationConfig.scope === ZabbixSyncScope.Host) {
         primaryText = destinationConfig.hostName;
@@ -208,6 +212,10 @@ export const getSecretSyncDestinationColValues = (secretSync: TSecretSync) => {
     case SecretSync.Rundeck:
       primaryText = destinationConfig.project;
       secondaryText = destinationConfig.path;
+      break;
+    case SecretSync.Portainer:
+      primaryText = `Stack #${destinationConfig.stackId}`;
+      secondaryText = `Environment #${destinationConfig.environmentId}`;
       break;
     case SecretSync.DigitalOceanAppPlatform:
       primaryText = destinationConfig.appName;
@@ -288,6 +296,21 @@ export const getSecretSyncDestinationColValues = (secretSync: TSecretSync) => {
     case SecretSync.Cloud66:
       primaryText = destinationConfig.stackName;
       secondaryText = "Stack";
+      break;
+    case SecretSync.Daytona:
+      primaryText = secretSync.connection.name;
+      secondaryText = "Daytona Organization";
+      break;
+    case SecretSync.Keeper:
+      primaryText = destinationConfig.folderName || destinationConfig.folderUid;
+      secondaryText = "Shared Folder";
+      break;
+    case SecretSync.Spacelift:
+      primaryText = destinationConfig.contextName;
+      secondaryText =
+        destinationConfig.configType === "environment-variable"
+          ? "environment variables"
+          : "file mount";
       break;
     default:
       throw new Error(`Unhandled Destination Col Values ${destination}`);

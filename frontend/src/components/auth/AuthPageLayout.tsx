@@ -9,6 +9,12 @@ import { AuthPageFooter } from "./AuthPageFooter";
 import { AuthPageHeader } from "./AuthPageHeader";
 
 type Props = {
+  anchorBottomContent?: boolean;
+  /** Per-step overrides for the marketing panel copy; the headline stays fixed. */
+  aside?: {
+    eyebrow?: ReactNode;
+    description?: ReactNode;
+  };
   bottomContent?: ReactNode;
   children: ReactNode;
   contentClassName?: string;
@@ -18,6 +24,8 @@ type Props = {
 };
 
 export const AuthPageLayout = ({
+  anchorBottomContent = false,
+  aside,
   bottomContent,
   children,
   contentClassName,
@@ -30,7 +38,7 @@ export const AuthPageLayout = ({
   return (
     <div
       className={cn(
-        "min-h-screen bg-linear-to-r from-card to-bunker-900 to-75%",
+        "min-h-screen bg-linear-to-r from-card to-page-deep to-75%",
         isSplit &&
           "lg:grid lg:grid-cols-[minmax(440px,44%)_minmax(0,1fr)] xl:grid-cols-[minmax(520px,40%)_minmax(0,1fr)]"
       )}
@@ -38,16 +46,31 @@ export const AuthPageLayout = ({
     >
       <section
         className={cn(
-          "flex h-screen min-h-0 min-w-0 flex-col overflow-y-auto px-5 sm:px-8 lg:px-10 xl:px-14",
+          "flex h-screen min-h-0 min-w-0 flex-col",
+          anchorBottomContent ? "overflow-hidden" : "thin-scrollbar overflow-y-auto",
           isSplit && "lg:border-r lg:border-border"
         )}
       >
         <AuthPageHeader>{headerAction}</AuthPageHeader>
-        <main className="flex flex-1 items-center justify-center py-10">
-          <div className={cn("w-full max-w-md", contentClassName)}>{children}</div>
+        <main
+          className={cn(
+            "flex flex-1 px-5 pt-10 pb-26 sm:px-8 lg:px-10 xl:px-14",
+            anchorBottomContent
+              ? "min-h-0 thin-scrollbar overflow-x-hidden overflow-y-auto"
+              : "items-center justify-center"
+          )}
+        >
+          <div className={cn("w-full max-w-md", anchorBottomContent && "m-auto", contentClassName)}>
+            {children}
+          </div>
         </main>
         {(bottomContent || showFooter) && (
-          <div className="relative z-10 pb-6 text-center">
+          <div
+            className={cn(
+              "relative z-10 px-5 pb-6 text-center sm:px-8 lg:px-10 xl:px-14",
+              anchorBottomContent && "shrink-0 border-t border-border pt-4"
+            )}
+          >
             {bottomContent}
             {showFooter && <AuthPageFooter />}
           </div>
@@ -68,8 +91,8 @@ export const AuthPageLayout = ({
 
           <div className="relative z-10 flex flex-1 items-center justify-center px-10 pb-16 xl:px-20">
             <div className="max-w-xl">
-              <p className="mb-4 font-jetbrains-mono text-xs tracking-[0.02em] text-project uppercase">
-                Trusted by 400,000+ developers
+              <p className="mb-4 font-mono text-xs tracking-[0.02em] text-project uppercase">
+                {aside?.eyebrow ?? "Trusted by 400,000+ developers"}
               </p>
               <h2 className="font-alliance text-3xl leading-tight font-normal text-foreground xl:text-4xl">
                 <span className="block">
@@ -77,8 +100,9 @@ export const AuthPageLayout = ({
                 </span>
                 <span className="block">for developers and agents</span>
               </h2>
-              <p className="mt-4 max-w-lg font-alliance text-sm leading-relaxed text-label xl:text-base">
-                One place to audit every credential your apps and agents use.
+              <p className="mt-4 max-w-lg font-sans text-sm leading-relaxed text-label xl:text-base">
+                {aside?.description ??
+                  "One place to audit every credential your apps and agents use."}
               </p>
             </div>
           </div>

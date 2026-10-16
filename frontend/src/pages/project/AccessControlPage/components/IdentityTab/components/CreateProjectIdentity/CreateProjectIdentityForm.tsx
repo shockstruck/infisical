@@ -1,9 +1,8 @@
 import { useMemo } from "react";
 import { Controller, FormProvider, useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { AxiosError } from "axios";
 
 import { createNotification } from "@app/components/notifications";
 import { RoleOption } from "@app/components/roles";
@@ -20,7 +19,9 @@ import {
   TabsList,
   TabsTrigger
 } from "@app/components/v3";
+import { useOrganization } from "@app/context";
 import { getProjectBaseURL } from "@app/helpers/project";
+import { AGENT_VAULT_PRODUCT_ROLE_OPTIONS, PAM_PRODUCT_ROLE_OPTIONS } from "@app/helpers/roles";
 import {
   projectIdentityMembershipQuery,
   useCreateIdentityProjectAdditionalPrivilege,
@@ -30,7 +31,9 @@ import {
   useListProjectIdentityMemberships,
   useUpdateProjectIdentityMembership
 } from "@app/hooks/api";
-import { useAddIdentityUniversalAuth } from "@app/hooks/api/identities";
+import { agentVaultKeys, useAddAgentVaultMembers } from "@app/hooks/api/agentVault";
+import { UNIVERSAL_AUTH_DEFAULTS, useAddIdentityUniversalAuth } from "@app/hooks/api/identities";
+import { pamKeys, useAddPamProductIdentityMember } from "@app/hooks/api/pam";
 import { ProjectType } from "@app/hooks/api/projects/types";
 import { ProjectMembershipRole } from "@app/hooks/api/roles/types";
 import {
@@ -46,17 +49,9 @@ import {
   TCreateProjectIdentityForm
 } from "./schema";
 
-const UNIVERSAL_AUTH_DEFAULTS = {
-  clientSecretTrustedIps: [{ ipAddress: "0.0.0.0/0" }, { ipAddress: "::/0" }],
-  accessTokenTrustedIps: [{ ipAddress: "0.0.0.0/0" }, { ipAddress: "::/0" }],
-  accessTokenTTL: 2592000,
-  accessTokenMaxTTL: 2592000,
-  accessTokenNumUsesLimit: 0,
-  accessTokenPeriod: 0,
-  lockoutEnabled: true,
-  lockoutThreshold: 3,
-  lockoutDurationSeconds: 300,
-  lockoutCounterResetSeconds: 30
+const SUBMIT_VARIANT_BY_PRODUCT: Partial<Record<ProjectType, "pam" | "av">> = {
+  [ProjectType.PAM]: "pam",
+  [ProjectType.AgentVault]: "av"
 };
 
 const buildTemplatePermissions = (
@@ -85,6 +80,7 @@ const buildTemplatePermissions = (
 type Props = {
   projectId: string;
   projectType: ProjectType;
+  productLabel: string;
   canGrantPrivileges: boolean;
   onClose: () => void;
 };
@@ -92,17 +88,37 @@ type Props = {
 export const CreateProjectIdentityForm = ({
   projectId,
   projectType,
+  productLabel,
   canGrantPrivileges,
   onClose
 }: Props) => {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const isCertManager = projectType === ProjectType.CertificateManager;
+  const isPam = projectType === ProjectType.PAM;
+  const isAgentVault = projectType === ProjectType.AgentVault;
+  const isProductScoped = isPam || isAgentVault;
 
-  const { data: roles } = useGetProjectRoles(projectId, projectType);
+  const { currentOrg } = useOrganization();
+  const { data: projectRoles } = useGetProjectRoles(projectId, projectType);
 
-  const defaultRole = isCertManager
-    ? { slug: ProjectMembershipRole.Member, name: "Member" }
-    : { slug: ProjectMembershipRole.NoAccess, name: "No Access" };
+  const roles = useMemo(() => {
+    if (!isProductScoped) return projectRoles;
+
+    const options = isPam ? PAM_PRODUCT_ROLE_OPTIONS : AGENT_VAULT_PRODUCT_ROLE_OPTIONS;
+
+    return (projectRoles ?? []).flatMap((role) => {
+      const productRole = options.find((option) => option.value === role.slug);
+      if (!productRole) return [];
+
+      return [{ ...role, name: productRole.label, description: productRole.description }];
+    });
+  }, [projectRoles, isProductScoped, isPam]);
+
+  const defaultRole =
+    isCertManager || isProductScoped
+      ? { slug: ProjectMembershipRole.Member, name: "Member" }
+      : { slug: ProjectMembershipRole.NoAccess, name: "No Access" };
 
   const form = useForm<TCreateProjectIdentityForm>({
     resolver: zodResolver(createProjectIdentitySchema),
@@ -145,10 +161,14 @@ export const CreateProjectIdentityForm = ({
   const { mutateAsync: createProjectIdentity } = useCreateProjectIdentity();
   const { mutateAsync: updateMembership } = useUpdateProjectIdentityMembership();
   const { mutateAsync: createMembership } = useCreateProjectIdentityMembership();
+  const { mutateAsync: addPamProductIdentityMember } = useAddPamProductIdentityMember();
+  const { mutateAsync: addAgentVaultMembers } = useAddAgentVaultMembers();
   const { mutateAsync: addUniversalAuth } = useAddIdentityUniversalAuth();
   const { mutateAsync: createAdditionalPrivilege } = useCreateIdentityProjectAdditionalPrivilege();
 
   const onSubmit = async (data: TCreateProjectIdentityForm) => {
+    let authAttachFailed = false;
+
     try {
       let identityId: string;
 
@@ -156,11 +176,12 @@ export const CreateProjectIdentityForm = ({
         const created = await createProjectIdentity({
           name: data.name!.trim(),
           projectId,
-          hasDeleteProtection: true
+          hasDeleteProtection: true,
+          ...(isProductScoped && data.role?.slug ? { roles: [{ role: data.role.slug }] } : {})
         });
         identityId = created.id;
 
-        if (data.role?.slug) {
+        if (!isProductScoped && data.role?.slug) {
           await updateMembership({
             roles: [{ role: data.role.slug }],
             identityId,
@@ -169,15 +190,41 @@ export const CreateProjectIdentityForm = ({
           });
         }
 
-        await addUniversalAuth({ projectId, identityId, ...UNIVERSAL_AUTH_DEFAULTS });
+        // The identity and its membership already exist by now, so a failed auth attach must not be
+        // reported as a failed creation — retrying would just create a duplicate identity.
+        try {
+          await addUniversalAuth({ projectId, identityId, ...UNIVERSAL_AUTH_DEFAULTS });
+        } catch {
+          authAttachFailed = true;
+        }
       } else {
         identityId = data.identity!.id;
-        await createMembership({
-          projectId,
-          projectType,
-          identityId,
-          role: data.role?.slug || undefined
-        });
+
+        // Each product keeps its own add-member endpoint, which enforces the product-admin check, the
+        // admin/member-only roles, and the rejection of identities scoped to another project.
+        if (isPam) {
+          await addPamProductIdentityMember({
+            projectId,
+            identityId,
+            role: data.role.slug
+          });
+        } else if (isAgentVault) {
+          await addAgentVaultMembers({ machineIdentityIds: [identityId], role: data.role.slug });
+        } else {
+          await createMembership({
+            projectId,
+            projectType,
+            identityId,
+            role: data.role?.slug || undefined
+          });
+        }
+      }
+
+      if (isPam) {
+        queryClient.invalidateQueries({ queryKey: pamKeys.productIdentities() });
+      }
+      if (isAgentVault) {
+        queryClient.invalidateQueries({ queryKey: agentVaultKeys.members(currentOrg.id) });
       }
 
       const hasTemplateGrants = data.templateIds.length > 0;
@@ -198,7 +245,12 @@ export const CreateProjectIdentityForm = ({
         }
       }
 
-      if (grantFailed) {
+      if (authAttachFailed) {
+        createNotification({
+          text: "Machine identity created, but attaching Universal Auth failed. Add an auth method from the identity page.",
+          type: "error"
+        });
+      } else if (grantFailed) {
         createNotification({
           text: `Machine identity ${
             data.mode === CreateProjectIdentityMode.Assign ? "added" : "created"
@@ -222,16 +274,8 @@ export const CreateProjectIdentityForm = ({
           params: { identityId }
         });
       }
-    } catch (err) {
-      const message = (err as AxiosError<{ message?: string }>)?.response?.data?.message;
-      createNotification({
-        text:
-          message ??
-          (data.mode === CreateProjectIdentityMode.Assign
-            ? "Failed to add machine identity"
-            : "Failed to create machine identity"),
-        type: "error"
-      });
+    } catch {
+      // Error is handled by the mutation's onError handler
     }
   };
 
@@ -256,7 +300,7 @@ export const CreateProjectIdentityForm = ({
                     }
                   }}
                 >
-                  <TabsList className="w-full">
+                  <TabsList aria-label="Identity assignment mode" className="w-full">
                     <TabsTrigger value={CreateProjectIdentityMode.Create}>Create New</TabsTrigger>
                     <TabsTrigger value={CreateProjectIdentityMode.Assign}>
                       Assign Existing
@@ -268,9 +312,7 @@ export const CreateProjectIdentityForm = ({
             <p className="text-sm text-muted">
               {mode === CreateProjectIdentityMode.Assign
                 ? "Reuse an existing machine identity from your organization."
-                : `Create a dedicated machine identity managed at the ${
-                    isCertManager ? "Certificate Manager" : "project"
-                  } level.`}
+                : `Create a dedicated machine identity managed at the ${productLabel} level.`}
             </p>
           </div>
 
@@ -282,7 +324,14 @@ export const CreateProjectIdentityForm = ({
                 <Field>
                   <FieldLabel>Name</FieldLabel>
                   <FieldContent>
-                    <Input {...field} autoFocus placeholder="Machine 1" isError={Boolean(error)} />
+                    <Input
+                      {...field}
+                      autoFocus
+                      placeholder="Machine 1"
+                      isError={Boolean(error)}
+                      autoComplete="off"
+                      name="project-identity-name"
+                    />
                   </FieldContent>
                   {error && <FieldError>{error.message}</FieldError>}
                 </Field>
@@ -350,7 +399,7 @@ export const CreateProjectIdentityForm = ({
         <SheetFooter className="border-t">
           <Button
             type="submit"
-            variant="project"
+            variant={SUBMIT_VARIANT_BY_PRODUCT[projectType] ?? "project"}
             isPending={isSubmitting}
             isDisabled={isSubmitting}
           >

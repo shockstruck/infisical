@@ -3,6 +3,7 @@ import { Controller, useFieldArray, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { CircleAlertIcon, RefreshCwIcon } from "lucide-react";
 import { z } from "zod";
 
 import { createNotification } from "@app/components/notifications";
@@ -10,6 +11,7 @@ import { RoleOption } from "@app/components/roles";
 import {
   Alert,
   AlertDescription,
+  AlertTitle,
   Button,
   CreatableSelect,
   Dialog,
@@ -20,26 +22,28 @@ import {
   DialogTitle,
   Field,
   FieldContent,
-  FieldDescription,
   FieldError,
   FieldLabel,
   FilterableSelect
 } from "@app/components/v3";
 import {
-  OrgPermissionActions,
+  OrgPermissionMemberActions,
   OrgPermissionSubjects,
+  ProjectPermissionMemberActions,
+  ProjectPermissionSub,
   useOrganization,
   useOrgPermission,
   useProject,
   useProjectPermission
 } from "@app/context";
+import { getProjectLabel, hidesProjects } from "@app/helpers/project";
 import {
   useAddUserToWsNonE2EE,
   useGetOrgUsers,
   useGetProjectRoles,
   useGetWorkspaceUsers
 } from "@app/hooks/api";
-import { ProjectType, ProjectVersion } from "@app/hooks/api/projects/types";
+import { ProjectVersion } from "@app/hooks/api/projects/types";
 import { UsePopUpState } from "@app/hooks/usePopUp";
 import { filterByGrantConditions, getMemberAssignRoleConditions } from "@app/lib/fn/permission";
 import { getRequesterStatus } from "@app/lib/fn/requesterStatus";
@@ -78,13 +82,39 @@ export const AddMemberModal = ({ popUp, handlePopUpToggle }: Props) => {
 
   const orgId = currentOrg?.id || "";
   const projectId = currentProject?.id || "";
-  const isCertManager = currentProject?.type === ProjectType.CertificateManager;
-  const productLabel = isCertManager ? "Certificate Manager" : "Project";
+  const productLabel = getProjectLabel(currentProject?.type);
+  const projectsHidden = hidesProjects(currentProject?.type);
 
-  const { data: members } = useGetWorkspaceUsers(projectId);
-  const { data: orgUsers } = useGetOrgUsers(orgId);
+  const {
+    data: members,
+    isPending: isMembersLoading,
+    isError: isMembersError,
+    refetch: refetchMembers
+  } = useGetWorkspaceUsers(projectId);
+  const {
+    data: orgUsers,
+    isPending: isOrgUsersLoading,
+    isError: isOrgUsersError,
+    refetch: refetchOrgUsers
+  } = useGetOrgUsers(orgId);
 
-  const { data: roles } = useGetProjectRoles(currentProject?.id || "", currentProject?.type);
+  const {
+    data: roles,
+    isPending: isRolesLoading,
+    isError: isRolesError,
+    refetch: refetchRoles
+  } = useGetProjectRoles(currentProject?.id || "", currentProject?.type);
+
+  const canAddMembers = projectPermission.can(
+    ProjectPermissionMemberActions.Create,
+    ProjectPermissionSub.Member
+  );
+  const canInviteNewMembers = orgPermission.can(
+    OrgPermissionMemberActions.Create,
+    OrgPermissionSubjects.Member
+  );
+  const isReferenceDataLoading = isMembersLoading || isOrgUsersLoading || isRolesLoading;
+  const hasReferenceDataError = isMembersError || isOrgUsersError || isRolesError;
 
   const assignRoleConditions = useMemo(
     () => getMemberAssignRoleConditions(projectPermission),
@@ -122,6 +152,7 @@ export const AddMemberModal = ({ popUp, handlePopUpToggle }: Props) => {
   }, [requesterEmail]);
 
   const onAddMembers = async ({ orgMemberships, projectRoleSlugs }: TAddMemberForm) => {
+    if (!canAddMembers || hasReferenceDataError) return;
     if (!currentProject) return;
     if (!currentOrg?.id) return;
 
@@ -160,7 +191,7 @@ export const AddMemberModal = ({ popUp, handlePopUpToggle }: Props) => {
 
       if (inviteeEmails.length !== selectedMembers.length) {
         createNotification({
-          text: "Failed to add users to project. One or more users were invalid.",
+          text: `Failed to add users to ${projectsHidden ? productLabel : "project"}. One or more users were invalid.`,
           type: "error"
         });
         return;
@@ -177,7 +208,7 @@ export const AddMemberModal = ({ popUp, handlePopUpToggle }: Props) => {
       }
     }
     createNotification({
-      text: `Successfully added user to ${isCertManager ? productLabel : "the project"}`,
+      text: `Successfully added user to ${projectsHidden ? productLabel : "the project"}`,
       type: "success"
     });
     handlePopUpToggle("addMember", false);
@@ -218,11 +249,6 @@ export const AddMemberModal = ({ popUp, handlePopUpToggle }: Props) => {
   const selectedOrgMemberships = watch("orgMemberships");
   const selectedRoleSlugs = watch("projectRoleSlugs");
 
-  const canInviteNewMembers = orgPermission.can(
-    OrgPermissionActions.Create,
-    OrgPermissionSubjects.Member
-  );
-
   return (
     <Dialog
       open={popUp?.addMember?.isOpen}
@@ -234,33 +260,66 @@ export const AddMemberModal = ({ popUp, handlePopUpToggle }: Props) => {
         handlePopUpToggle("addMember", isOpen);
       }}
     >
-      <DialogContent className="overflow-visible sm:max-w-xl">
+      <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>
-            {isCertManager
-              ? "Add Members to Certificate Manager"
+            {projectsHidden
+              ? `Add Members to ${productLabel}`
               : (t("section.members.add-dialog.add-member-to-project") as string)}
           </DialogTitle>
           <DialogDescription>{t("section.members.add-dialog.user-will-email")}</DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit(onAddMembers)} className="flex flex-col gap-4">
+          {!canAddMembers && (
+            <Alert variant="warning">
+              <CircleAlertIcon />
+              <AlertTitle>Permission required</AlertTitle>
+              <AlertDescription>
+                You don&apos;t have permission to add users to this {productLabel.toLowerCase()}.
+              </AlertDescription>
+            </Alert>
+          )}
+          {hasReferenceDataError && (
+            <Alert variant="danger">
+              <CircleAlertIcon />
+              <AlertTitle>Could not load member options</AlertTitle>
+              <AlertDescription>
+                <span>Retry to load eligible users and roles.</span>
+                <Button
+                  size="xs"
+                  variant="danger"
+                  onClick={() =>
+                    Promise.all([refetchMembers(), refetchOrgUsers(), refetchRoles()]).catch(
+                      () => undefined
+                    )
+                  }
+                >
+                  <RefreshCwIcon />
+                  Retry
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
           <Controller
             control={control}
             name="orgMemberships"
             render={({ field }) => (
               <Field>
-                <FieldLabel>{`Invite users to ${productLabel.toLowerCase()}`}</FieldLabel>
+                <FieldLabel className="sr-only">
+                  {`Invite users to ${productLabel.toLowerCase()}`}
+                </FieldLabel>
                 <FieldContent>
                   {canInviteNewMembers ? (
                     <CreatableSelect
                       /* eslint-disable-next-line react/no-unstable-nested-components */
                       noOptionsMessage={() => (
                         <>
-                          <p>
-                            {!projectInviteList.list.length && (
-                              <p>All organization members are already assigned to this project.</p>
-                            )}
-                          </p>
+                          {!projectInviteList.list.length && (
+                            <p>
+                              All organization members are already assigned to{" "}
+                              {projectsHidden ? productLabel : "this project"}.
+                            </p>
+                          )}
                           <p>
                             Invite new users to your organization by typing out their email address.
                           </p>
@@ -296,6 +355,8 @@ export const AddMemberModal = ({ popUp, handlePopUpToggle }: Props) => {
                       value={field.value}
                       onChange={field.onChange}
                       isError={!!errors.orgMemberships?.length}
+                      isLoading={isReferenceDataLoading}
+                      isDisabled={!canAddMembers || hasReferenceDataError}
                     />
                   ) : (
                     <FilterableSelect
@@ -306,13 +367,9 @@ export const AddMemberModal = ({ popUp, handlePopUpToggle }: Props) => {
                       value={field.value}
                       onChange={field.onChange}
                       isError={!!errors.orgMemberships?.length}
+                      isLoading={isReferenceDataLoading}
+                      isDisabled={!canAddMembers || hasReferenceDataError}
                     />
-                  )}
-                  {canInviteNewMembers && (
-                    <FieldDescription>
-                      You can invite new users to your organization by typing out their email
-                      address
-                    </FieldDescription>
                   )}
                 </FieldContent>
                 <FieldError>{errors.orgMemberships?.[0]?.message}</FieldError>
@@ -324,7 +381,7 @@ export const AddMemberModal = ({ popUp, handlePopUpToggle }: Props) => {
             name="projectRoleSlugs"
             render={({ field: { onChange, value }, fieldState: { error } }) => (
               <Field>
-                <FieldLabel>Select roles</FieldLabel>
+                <FieldLabel className="sr-only">Select roles</FieldLabel>
                 <FieldContent>
                   <FilterableSelect
                     options={filteredRoles}
@@ -336,10 +393,9 @@ export const AddMemberModal = ({ popUp, handlePopUpToggle }: Props) => {
                     getOptionValue={(option) => option.slug}
                     getOptionLabel={(option) => option.name}
                     isError={Boolean(error)}
+                    isLoading={isReferenceDataLoading}
+                    isDisabled={!canAddMembers || hasReferenceDataError}
                   />
-                  <FieldDescription>
-                    Select the roles that you wish to assign to the users
-                  </FieldDescription>
                 </FieldContent>
                 <FieldError>{error?.message}</FieldError>
               </Field>
@@ -347,17 +403,23 @@ export const AddMemberModal = ({ popUp, handlePopUpToggle }: Props) => {
           />
           {requesterEmail && projectInviteList.requesterStatus.isProjectUser && (
             <Alert variant="danger">
-              <AlertDescription>Requested user is part of the project.</AlertDescription>
-            </Alert>
-          )}
-          {requesterEmail && !projectInviteList.requesterStatus.isProjectUser && (
-            <Alert>
               <AlertDescription>
-                Assign a role to provide access to requesting user{" "}
-                <b>{projectInviteList.requesterStatus.userLabel}</b>.
+                Requested user is part of {projectsHidden ? productLabel : "the project"}.
               </AlertDescription>
             </Alert>
           )}
+          {requesterEmail &&
+            !projectInviteList.requesterStatus.isProjectUser &&
+            projectInviteList.requesterStatus.userId && (
+              <Alert>
+                <AlertDescription>
+                  <p>
+                    Assign a role to provide access to requesting user{" "}
+                    <b>{projectInviteList.requesterStatus.userLabel}</b>.
+                  </p>
+                </AlertDescription>
+              </Alert>
+            )}
           <DialogFooter>
             <Button
               variant="ghost"
@@ -372,6 +434,9 @@ export const AddMemberModal = ({ popUp, handlePopUpToggle }: Props) => {
               isPending={isSubmitting}
               isDisabled={
                 isSubmitting ||
+                !canAddMembers ||
+                hasReferenceDataError ||
+                isReferenceDataLoading ||
                 selectedOrgMemberships.length === 0 ||
                 selectedRoleSlugs.length === 0
               }

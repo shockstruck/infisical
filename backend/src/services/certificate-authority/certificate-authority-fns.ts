@@ -4,19 +4,14 @@ import RE2 from "re2";
 
 import { crypto } from "@app/lib/crypto/cryptography";
 import { derivePublicKeyFromSecret, getPqcCrypto, isPqcAlgorithm, PqcCryptoKey } from "@app/lib/crypto/pqc";
-import { BadRequestError, ForbiddenRequestError, NotFoundError } from "@app/lib/errors";
+import { DatabaseErrorCode } from "@app/lib/error-codes";
+import { BadRequestError, DatabaseError, ForbiddenRequestError, NotFoundError } from "@app/lib/errors";
 import { getProjectKmsCertificateKeyId } from "@app/services/project/project-fns";
 import { CertKeySource } from "@app/services/signer/signer-enums";
 
-import {
-  CertExtendedKeyUsage,
-  CertExtendedKeyUsageOIDToName,
-  CertKeyAlgorithm,
-  CertKeyUsage,
-  CertStatus,
-  TAltNameType
-} from "../certificate/certificate-types";
-import { DEFAULT_CRL_VALIDITY_DAYS } from "../certificate-common/certificate-constants";
+import { CertKeyAlgorithm, CertStatus } from "../certificate/certificate-types";
+import { CERT_CLOCK_SKEW_MS, DEFAULT_CRL_VALIDITY_DAYS } from "../certificate-common/certificate-constants";
+import { TCertificateProfileDALFactory } from "../certificate-profile/certificate-profile-dal";
 import { buildHsmCaSigner, buildLocalCaSigner, caKeyAlgorithmToHsmShape, TCaSigner } from "./ca-signer";
 import { TCertificateAuthorityDALFactory } from "./certificate-authority-dal";
 import {
@@ -35,6 +30,12 @@ export const createSerialNumber = () => {
   return randomBytes.toString("hex");
 };
 
+// on anything short-lived these belong together: backdating the start without pushing out the
+// expiry leaves the certificate rejected as expired by a host whose clock runs ahead of ours
+export const getNotBeforeWithClockSkew = (issuedAt: Date) => new Date(issuedAt.getTime() - CERT_CLOCK_SKEW_MS);
+
+export const getNotAfterWithClockSkew = (expiresAt: Date) => new Date(expiresAt.getTime() + CERT_CLOCK_SKEW_MS);
+
 export const assertCaInProfileProject = (ca: { projectId: string }, profile: { projectId: string }) => {
   if (ca.projectId !== profile.projectId) {
     throw new ForbiddenRequestError({
@@ -50,18 +51,18 @@ export const assertCaInProfileProject = (ca: { projectId: string }, profile: { p
 export const createDistinguishedName = (parts: TDNParts) => {
   // Build JSON array for x509.Name - the library handles all RFC 4514 escaping
   const jsonName: Array<{ [type: string]: string[] }> = [];
+
+  if (parts.domainComponents) {
+    for (const dc of [...parts.domainComponents].reverse()) {
+      if (dc) jsonName.push({ DC: [dc] });
+    }
+  }
   if (parts.country) jsonName.push({ C: [parts.country] });
   if (parts.organization) jsonName.push({ O: [parts.organization] });
   if (parts.ou) jsonName.push({ OU: [parts.ou] });
   if (parts.province) jsonName.push({ ST: [parts.province] });
   if (parts.commonName) jsonName.push({ CN: [parts.commonName] });
   if (parts.locality) jsonName.push({ L: [parts.locality] });
-  // DC is multi-valued and ordered; emit one RDN per value in the given order (after CN, AD-style).
-  if (parts.domainComponents) {
-    for (const dc of parts.domainComponents) {
-      if (dc) jsonName.push({ DC: [dc] });
-    }
-  }
 
   // Create Name object from JSON and convert to properly escaped string
   const name = new x509.Name(jsonName);
@@ -78,13 +79,30 @@ const getNameField = (name: x509.Name, field: string): string | undefined => {
   return values.length > 0 ? values[values.length - 1] : undefined;
 };
 
+const DOMAIN_COMPONENT_RDN_KEYS = new Set(["DC", "0.9.2342.19200300.100.1.25"]);
+
+/**
+ * Reads a DC chain into display order, most specific component first. An RDNSequence is encoded
+ * root-first, so the encoded order is reversed. Reading it any other way would let the same bytes
+ * denote two different domains, and a CSR forwarded to an external CA keeps whatever it encoded.
+ */
+const extractDomainComponentsInDisplayOrder = (name: x509.Name): string[] | undefined => {
+  const domainComponents = name
+    .toJSON()
+    .flatMap((rdn) =>
+      Object.entries(rdn).flatMap(([key, values]) => (DOMAIN_COMPONENT_RDN_KEYS.has(key) ? values : []))
+    );
+
+  if (domainComponents.length === 0) return undefined;
+
+  return domainComponents.reverse();
+};
+
 /**
  * Extract DN parts directly from an x509 Name object.
  * This is the preferred method as it uses the library's built-in RFC 4514 parsing.
  */
 export const extractDnParts = (name: x509.Name): TDNParts => {
-  // DC is multi-valued (ordered); keep all values rather than the last-wins single-value helper.
-  const domainComponents = name.getField("DC");
   return {
     country: getNameField(name, "C"),
     organization: getNameField(name, "O"),
@@ -92,55 +110,8 @@ export const extractDnParts = (name: x509.Name): TDNParts => {
     province: getNameField(name, "ST"),
     commonName: getNameField(name, "CN"),
     locality: getNameField(name, "L"),
-    domainComponents: domainComponents.length > 0 ? domainComponents : undefined
+    domainComponents: extractDomainComponentsInDisplayOrder(name)
   };
-};
-
-/**
- * Extract the common name, SANs, key usages, and extended key usages from an issued X.509
- * certificate. Used by external CAs (DigiCert, GoDaddy, ...) to populate the local certificate
- * record from a downloaded leaf certificate.
- */
-export const extractIssuedCertificateFields = (certObj: x509.X509Certificate) => {
-  const subject = extractDnParts(certObj.subjectName);
-  const commonName = subject.commonName ?? "";
-
-  const sanExt = certObj.getExtension("2.5.29.17");
-  const altNames: string[] = [];
-  if (sanExt) {
-    const sanNames = new x509.GeneralNames(sanExt.value);
-    for (const item of sanNames.items) {
-      if (
-        item.type === TAltNameType.DNS ||
-        item.type === TAltNameType.IP ||
-        item.type === TAltNameType.EMAIL ||
-        item.type === TAltNameType.URL
-      ) {
-        altNames.push(item.value);
-      }
-    }
-  }
-
-  const keyUsages: CertKeyUsage[] = [];
-  const keyUsagesExt = certObj.getExtension(x509.KeyUsagesExtension);
-  if (keyUsagesExt) {
-    for (const keyUsage of Object.values(CertKeyUsage)) {
-      if ((x509.KeyUsageFlags[keyUsage] & keyUsagesExt.usages) !== 0) {
-        keyUsages.push(keyUsage);
-      }
-    }
-  }
-
-  const extendedKeyUsages: CertExtendedKeyUsage[] = [];
-  const ekuExt = certObj.getExtension(x509.ExtendedKeyUsageExtension);
-  if (ekuExt) {
-    for (const oid of ekuExt.usages) {
-      const mapped = CertExtendedKeyUsageOIDToName[oid as string];
-      if (mapped) extendedKeyUsages.push(mapped);
-    }
-  }
-
-  return { commonName, altNames, keyUsages, extendedKeyUsages };
 };
 
 /**
@@ -371,12 +342,13 @@ export const getCaCredentials = async ({
   certificateAuthoritySecretDAL,
   projectDAL,
   kmsService,
-  signatureAlgorithm
+  signatureAlgorithm,
+  prefetched
 }: TGetCaCredentialsDTO) => {
-  const ca = await certificateAuthorityDAL.findByIdWithAssociatedCa(caId);
+  const ca = prefetched?.ca ?? (await certificateAuthorityDAL.findByIdWithAssociatedCa(caId));
   if (!ca?.internalCa?.id) throw new NotFoundError({ message: `Internal CA with ID '${caId}' not found` });
 
-  const caSecret = await certificateAuthoritySecretDAL.findOne({ caId });
+  const caSecret = prefetched?.caSecret ?? (await certificateAuthoritySecretDAL.findOne({ caId }));
   if (!caSecret) throw new NotFoundError({ message: `CA secret for CA with ID '${caId}' not found` });
   if (!caSecret.encryptedPrivateKey) {
     throw new BadRequestError({
@@ -384,11 +356,16 @@ export const getCaCredentials = async ({
     });
   }
 
-  const keyId = await getProjectKmsCertificateKeyId({
-    projectId: ca.projectId,
-    projectDAL,
-    kmsService
-  });
+  // getProjectKmsCertificateKeyId opens a transaction even on its read-only path, so a caller that
+  // already resolved the key skips it. That matters on the OCSP signing path, where the concurrency
+  // cap would otherwise hold one transaction per in-flight signature against a ten-connection pool.
+  const keyId =
+    prefetched?.kmsKeyId ??
+    (await getProjectKmsCertificateKeyId({
+      projectId: ca.projectId,
+      projectDAL,
+      kmsService
+    }));
 
   const kmsDecryptor = await kmsService.decryptWithKmsKey({
     kmsId: keyId
@@ -451,7 +428,8 @@ export const getCaSigner = async ({
   projectDAL,
   kmsService,
   hsmConnectorService,
-  signatureAlgorithm
+  signatureAlgorithm,
+  prefetched
 }: TGetCaSignerDTO): Promise<{
   caSecret: Awaited<ReturnType<typeof getCaCredentials>>["caSecret"];
   signer: TCaSigner;
@@ -504,7 +482,8 @@ export const getCaSigner = async ({
     certificateAuthoritySecretDAL,
     projectDAL,
     kmsService,
-    signatureAlgorithm
+    signatureAlgorithm,
+    prefetched: { ca, caSecret, kmsKeyId: prefetched?.kmsKeyId }
   });
   const signingAlgorithm = signatureAlgorithm || keyAlgorithmToAlgCfg(keyAlgorithm);
   const signer = buildLocalCaSigner({ privateKey: caPrivateKey, publicKey: caPublicKey, signingAlgorithm });
@@ -701,6 +680,21 @@ export const normalizeUrlForComparison = (url: string) => {
   }
 };
 
+export const buildOcspResponderUrl = (siteUrl: string, caId: string): string =>
+  `${siteUrl}/api/v1/cert-manager/ocsp/${caId}`;
+
+export const buildAuthorityInfoAccessExtension = ({
+  caIssuerUrl,
+  ocspResponderUrl
+}: {
+  caIssuerUrl: string;
+  ocspResponderUrl?: string | null;
+}): x509.AuthorityInfoAccessExtension =>
+  new x509.AuthorityInfoAccessExtension({
+    caIssuers: new x509.GeneralName("url", caIssuerUrl),
+    ...(ocspResponderUrl ? { ocsp: new x509.GeneralName("url", ocspResponderUrl) } : {})
+  });
+
 export const buildCrlDistributionPointUrls = (
   managedUrl: string,
   customUrls: string[] | null | undefined,
@@ -717,4 +711,37 @@ export const buildCrlDistributionPointUrls = (
     acc.push(trimmed);
     return acc;
   }, []);
+};
+
+export const assertNoCertificateProfilesUsingCa = async (
+  certificateProfileDAL: Pick<TCertificateProfileDALFactory, "findByCaId">,
+  caId: string,
+  caName: string
+) => {
+  const profiles = await certificateProfileDAL.findByCaId(caId);
+  if (profiles.length > 0) {
+    const profileNames = profiles.map((profile) => profile.slug || profile.id).join(", ");
+
+    throw new BadRequestError({
+      message: `Cannot delete CA '${caName}' as it is currently in use by the following certificate profiles: ${profileNames}. Please remove this CA from these profiles before deleting it.`
+    });
+  }
+};
+
+export const rethrowCaDeleteError = (error: unknown): never => {
+  if (error instanceof DatabaseError) {
+    const { code, constraint } = error.error as { code?: string; constraint?: string };
+    if (code === DatabaseErrorCode.ForeignKeyViolation) {
+      if (constraint === "pki_certificate_profiles_caid_foreign") {
+        throw new BadRequestError({
+          message:
+            "Cannot delete this CA because certificate profiles are associated with it. Delete those certificate profiles first."
+        });
+      }
+      throw new BadRequestError({
+        message: "Cannot delete this CA because it is referenced by another resource"
+      });
+    }
+  }
+  throw error;
 };

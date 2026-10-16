@@ -7,6 +7,7 @@ export enum ActorType {
   ACME_PROFILE = "acmeProfile",
   ACME_ACCOUNT = "acmeAccount",
   EST_ACCOUNT = "estAccount",
+  AGENT_VAULT_PROXY = "agentVaultProxy",
   UNKNOWN_USER = "unknownUser"
 }
 
@@ -126,10 +127,15 @@ export enum EventType {
   GET_CERT_BODY = "get-cert-body",
   GET_CERT_PRIVATE_KEY = "get-cert-private-key",
   GET_CERT_BUNDLE = "get-cert-bundle",
+  EXPORT_CERT_PKCS12 = "export-cert-pkcs12",
   CREATE_PKI_ALERT = "create-pki-alert",
   GET_PKI_ALERT = "get-pki-alert",
   UPDATE_PKI_ALERT = "update-pki-alert",
   DELETE_PKI_ALERT = "delete-pki-alert",
+  CREATE_ALERT = "create-alert",
+  UPDATE_ALERT = "update-alert",
+  DELETE_ALERT = "delete-alert",
+  TEST_ALERT_CHANNEL = "test-alert-channel",
   CREATE_PKI_COLLECTION = "create-pki-collection",
   GET_PKI_COLLECTION = "get-pki-collection",
   UPDATE_PKI_COLLECTION = "update-pki-collection",
@@ -197,11 +203,19 @@ export enum EventType {
   CREATE_PKI_SYNC = "create-pki-sync",
   UPDATE_PKI_SYNC = "update-pki-sync",
   DELETE_PKI_SYNC = "delete-pki-sync",
+  PKI_SYNC_LINK_CERTIFICATES = "pki-sync-link-certificates",
+  PKI_SYNC_UNLINK_CERTIFICATES = "pki-sync-unlink-certificates",
+  PKI_SYNC_SKIP_CERTIFICATE = "pki-sync-skip-certificate",
   PKI_SYNC_SYNC_CERTIFICATES = "pki-sync-sync-certificates",
   PKI_SYNC_IMPORT_CERTIFICATES = "pki-sync-import-certificates",
   PKI_SYNC_REMOVE_CERTIFICATES = "pki-sync-remove-certificates",
+  PKI_SYNC_HEALTH_CHECK = "pki-sync-health-check",
+  PKI_SYNC_TEST_HEALTH_CHECK = "pki-sync-test-health-check",
   OIDC_GROUP_MEMBERSHIP_MAPPING_ASSIGN_USER = "oidc-group-membership-mapping-assign-user",
   OIDC_GROUP_MEMBERSHIP_MAPPING_REMOVE_USER = "oidc-group-membership-mapping-remove-user",
+  OIDC_PROVISIONED_PLACEHOLDER_ADOPTED = "oidc-provisioned-placeholder-adopted",
+  SSO_USER_PROFILE_SYNCED = "sso-user-profile-synced",
+  SSO_USER_EMAIL_SYNC_SKIPPED = "sso-user-email-sync-skipped",
   CREATE_KMIP_CLIENT = "create-kmip-client",
   UPDATE_KMIP_CLIENT = "update-kmip-client",
   DELETE_KMIP_CLIENT = "delete-kmip-client",
@@ -211,6 +225,7 @@ export enum EventType {
   SETUP_KMIP = "setup-kmip",
   GET_KMIP = "get-kmip",
   REGISTER_KMIP_SERVER = "register-kmip-server",
+  KMIP_SERVER_CONNECT = "kmip-server-connect",
   KMIP_OPERATION_CREATE = "kmip-operation-create",
   KMIP_OPERATION_GET = "kmip-operation-get",
   KMIP_OPERATION_DESTROY = "kmip-operation-destroy",
@@ -262,6 +277,7 @@ export enum EventType {
   AUTOMATED_RENEW_SUBSCRIBER_CERT = "automated-renew-subscriber-cert",
   LIST_PKI_SUBSCRIBER_CERTS = "list-pki-subscriber-certs",
   UPDATE_ORG = "update-org",
+  ENABLE_ORG_WIDE_SECRET_VALUE_TRACKING = "enable-org-wide-secret-value-tracking",
 
   CREATE_PROJECT = "create-project",
   UPDATE_PROJECT = "update-project",
@@ -273,15 +289,24 @@ export enum EventType {
 
   DASHBOARD_LIST_SECRETS = "dashboard-list-secrets",
   DASHBOARD_GET_SECRET_VALUE = "dashboard-get-secret-value",
+  SEARCH_SECRETS_BY_VALUE = "search-secrets-by-value",
   DASHBOARD_GET_SECRET_VERSION_VALUE = "dashboard-get-secret-version-value",
 
   VIEW_INSIGHTS_SECRETS_MANAGEMENT_CALENDAR = "view-insights-secrets-management-calendar",
   VIEW_INSIGHTS_SECRETS_MANAGEMENT_ACCESS_VOLUME = "view-insights-secrets-management-access-volume",
+  VIEW_INSIGHTS_SECRETS_MANAGEMENT_ORG_AUTH_METHOD_DISTRIBUTION = "view-insights-secrets-management-org-auth-method-distribution",
   VIEW_INSIGHTS_SECRETS_MANAGEMENT_ACCESS_LOCATIONS = "view-insights-secrets-management-access-locations",
   VIEW_INSIGHTS_SECRETS_MANAGEMENT_SUMMARY = "view-insights-secrets-management-summary",
   VIEW_INSIGHTS_AUTH_METHODS = "view-insights-auth-methods",
   VIEW_INSIGHTS_SECRETS_DUPLICATION = "view-insights-secrets-duplication",
+  VIEW_INSIGHTS_ORG_SECRETS_DUPLICATION = "view-insights-org-secrets-duplication",
   VIEW_INSIGHTS_SECRETS_MANAGEMENT_COUNTS = "view-insights-secrets-management-counts",
+  VIEW_INSIGHTS_SECRETS_MANAGEMENT_USAGE = "view-insights-secrets-management-usage",
+  VIEW_INSIGHTS_SECRETS_MANAGEMENT_PROJECT_WARNINGS = "view-insights-secrets-management-project-warnings",
+
+  CREATE_ORG_AUDIT_REPORT = "create-org-audit-report",
+  GET_ORG_AUDIT_REPORTS = "get-org-audit-reports",
+  DELETE_ORG_AUDIT_REPORT = "delete-org-audit-report",
 
   CREATE_PROJECT_ROLE = "create-project-role",
   UPDATE_PROJECT_ROLE = "update-project-role",
@@ -295,6 +320,9 @@ export enum EventType {
 
   CREATE_SUB_ORGANIZATION = "create-sub-organization",
   UPDATE_SUB_ORGANIZATION = "update-sub-organization",
+
+  UPDATE_USER_ORG_MEMBERSHIP = "update-user-org-membership",
+  DELETE_USER_ORG_MEMBERSHIP = "delete-user-org-membership",
 
   CREATE_IDENTITY_ORG_MEMBERSHIP = "create-identity-org-membership",
   UPDATE_IDENTITY_ORG_MEMBERSHIP = "update-identity-org-membership",
@@ -313,6 +341,7 @@ export enum EventType {
   PAM_FOLDER_CREATE = "pam-folder-create",
   PAM_FOLDER_UPDATE = "pam-folder-update",
   PAM_FOLDER_DELETE = "pam-folder-delete",
+  ORG_ADMIN_ACCESS_PAM_FOLDER = "org-admin-accessed-pam-folder",
   PAM_PRODUCT_MEMBER_ADD = "pam-product-member-add",
   PAM_PRODUCT_MEMBER_UPDATE = "pam-product-member-update",
   PAM_PRODUCT_MEMBER_REMOVE = "pam-product-member-remove",
@@ -335,6 +364,7 @@ export enum EventType {
   PAM_ACCOUNT_ROTATE_CREDENTIALS = "pam-account-rotate-credentials",
   PAM_ACCOUNT_SET_ROTATION_ACCOUNT = "pam-account-set-rotation-account",
   PAM_ACCOUNT_SSH_CA_CREATE = "pam-account-ssh-ca-create",
+  PAM_ACCOUNT_CREDENTIALS_VIEW = "pam-account-credentials-view",
   PAM_APPROVAL_CONFIG_UPDATE = "pam-approval-config-update",
   PAM_DISCOVERY_SOURCE_CREATE = "pam-discovery-source-create",
   PAM_DISCOVERY_SOURCE_UPDATE = "pam-discovery-source-update",
@@ -349,6 +379,7 @@ export enum EventType {
   ISSUE_CERTIFICATE_FROM_PROFILE = "issue-certificate-from-profile",
   SIGN_CERTIFICATE_FROM_PROFILE = "sign-certificate-from-profile",
   ORDER_CERTIFICATE_FROM_PROFILE = "order-certificate-from-profile",
+  CERTIFICATE_ISSUANCE_FAILED = "certificate-issuance-failed",
   GET_CERTIFICATE_PROFILE_LATEST_ACTIVE_BUNDLE = "get-certificate-profile-latest-active-bundle",
 
   CREATE_CERTIFICATE_REQUEST = "create-certificate-request",
@@ -377,33 +408,6 @@ export enum EventType {
   APPROVAL_REQUEST_GRANT_GET = "approval-request-grant-get",
   APPROVAL_REQUEST_GRANT_REVOKE = "approval-request-grant-revoke",
   PAM_ACCESS_POLICY_BYPASSED = "pam-access-policy-bypassed",
-
-  // MCP Endpoints
-  MCP_ENDPOINT_CREATE = "mcp-endpoint-create",
-  MCP_ENDPOINT_UPDATE = "mcp-endpoint-update",
-  MCP_ENDPOINT_DELETE = "mcp-endpoint-delete",
-  MCP_ENDPOINT_GET = "mcp-endpoint-get",
-  MCP_ENDPOINT_LIST = "mcp-endpoint-list",
-  MCP_ENDPOINT_LIST_TOOLS = "mcp-endpoint-list-tools",
-  MCP_ENDPOINT_ENABLE_TOOL = "mcp-endpoint-enable-tool",
-  MCP_ENDPOINT_DISABLE_TOOL = "mcp-endpoint-disable-tool",
-  MCP_ENDPOINT_BULK_UPDATE_TOOLS = "mcp-endpoint-bulk-update-tools",
-  MCP_ENDPOINT_OAUTH_CLIENT_REGISTER = "mcp-endpoint-oauth-client-register",
-  MCP_ENDPOINT_OAUTH_AUTHORIZE = "mcp-endpoint-oauth-authorize",
-  MCP_ENDPOINT_CONNECT = "mcp-endpoint-connect",
-  MCP_ENDPOINT_SAVE_USER_CREDENTIAL = "mcp-endpoint-save-user-credential",
-
-  // MCP Servers
-  MCP_SERVER_CREATE = "mcp-server-create",
-  MCP_SERVER_UPDATE = "mcp-server-update",
-  MCP_SERVER_DELETE = "mcp-server-delete",
-  MCP_SERVER_GET = "mcp-server-get",
-  MCP_SERVER_LIST = "mcp-server-list",
-  MCP_SERVER_LIST_TOOLS = "mcp-server-list-tools",
-  MCP_SERVER_SYNC_TOOLS = "mcp-server-sync-tools",
-
-  // MCP Activity Logs
-  MCP_ACTIVITY_LOG_LIST = "mcp-activity-log-list",
 
   // Dynamic Secrets
   CREATE_DYNAMIC_SECRET = "create-dynamic-secret",
@@ -434,13 +438,18 @@ export enum EventType {
   EXTERNAL_MIGRATION_CREATE = "external-migration-create",
   EXTERNAL_MIGRATION_UPDATE = "external-migration-update",
   EXTERNAL_MIGRATION_DELETE = "external-migration-delete",
+  IMPORT_VAULT_SECRETS = "import-vault-secrets",
 
   // Gateway
   GATEWAY_CREATE = "gateway-create",
+  GATEWAY_UPDATE = "gateway-update",
+  GATEWAY_DELETE = "gateway-delete",
   GATEWAY_ENROLL = "gateway-enroll",
+  GATEWAY_CONNECT = "gateway-connect",
   GATEWAY_ENROLLMENT_TOKEN_CREATE = "gateway-enrollment-token-create",
   RESOURCE_AUTH_METHOD_LOGIN = "resource-auth-method-login",
   RESOURCE_AUTH_METHOD_LOGIN_FAILED = "resource-auth-method-login-failed",
+  RESOURCE_AUTH_METHOD_CREATE = "resource-auth-method-create",
   RESOURCE_AUTH_METHOD_UPDATE = "resource-auth-method-update",
   RESOURCE_AUTH_METHOD_REVOKE = "resource-auth-method-revoke",
   RELAY_CREATE = "relay-create",
@@ -454,5 +463,37 @@ export enum EventType {
 
   // Project Grants
   CREATE_PROJECT_FOLDER_GRANT = "create-project-folder-grant",
-  DELETE_PROJECT_FOLDER_GRANT = "delete-project-folder-grant"
+  DELETE_PROJECT_FOLDER_GRANT = "delete-project-folder-grant",
+
+  // Secret folder access (folder RBAC)
+  CREATE_SECRET_FOLDER_ACCESS = "create-secret-folder-access",
+  UPDATE_SECRET_FOLDER_ACCESS = "update-secret-folder-access",
+  DELETE_SECRET_FOLDER_ACCESS = "delete-secret-folder-access",
+
+  AGENT_VAULT_ACCESS_BUNDLE_CREATE = "agent-vault-access-bundle-create",
+  AGENT_VAULT_ACCESS_BUNDLE_UPDATE = "agent-vault-access-bundle-update",
+  AGENT_VAULT_ACCESS_BUNDLE_DELETE = "agent-vault-access-bundle-delete",
+  AGENT_VAULT_SERVICE_CREATE = "agent-vault-service-create",
+  AGENT_VAULT_SERVICE_UPDATE = "agent-vault-service-update",
+  AGENT_VAULT_SERVICE_DELETE = "agent-vault-service-delete",
+  AGENT_VAULT_VARIABLE_CREATE = "agent-vault-variable-create",
+  AGENT_VAULT_VARIABLE_UPDATE = "agent-vault-variable-update",
+  AGENT_VAULT_VARIABLE_DELETE = "agent-vault-variable-delete",
+  AGENT_VAULT_VARIABLE_VALUE_VIEW = "agent-vault-variable-value-view",
+  AGENT_VAULT_MEMBER_ADD = "agent-vault-member-add",
+  AGENT_VAULT_MEMBER_UPDATE = "agent-vault-member-update",
+  AGENT_VAULT_MEMBER_REMOVE = "agent-vault-member-remove",
+  AGENT_VAULT_ACCESS_BUNDLE_MEMBER_ADD = "agent-vault-access-bundle-member-add",
+  AGENT_VAULT_ACCESS_BUNDLE_MEMBER_REMOVE = "agent-vault-access-bundle-member-remove",
+  AGENT_VAULT_SESSION_MINT = "agent-vault-session-mint",
+  AGENT_VAULT_SESSION_REVOKE = "agent-vault-session-revoke",
+  AGENT_VAULT_PROXY_REGISTER = "agent-vault-proxy-register",
+  AGENT_VAULT_PROXY_TOKEN_REISSUE = "agent-vault-proxy-token-reissue",
+  AGENT_VAULT_PROXY_ENROLL = "agent-vault-proxy-enroll",
+  AGENT_VAULT_PROXY_UPDATE = "agent-vault-proxy-update",
+  AGENT_VAULT_PROXY_REVOKE = "agent-vault-proxy-revoke",
+  AGENT_VAULT_PROXY_DELETE = "agent-vault-proxy-delete",
+  AGENT_VAULT_SESSION_LOG_SETTINGS_UPDATE = "agent-vault-session-log-settings-update",
+  PERMISSION_DENIED = "permission-denied",
+  UPDATE_AUDIT_LOG_SETTINGS = "update-audit-log-settings"
 }

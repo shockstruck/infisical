@@ -5,7 +5,6 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { format } from "date-fns";
 import { FolderOpen, SearchIcon, ShieldCheck } from "lucide-react";
 
-import { PageHeader } from "@app/components/v2";
 import {
   Badge,
   Card,
@@ -31,6 +30,7 @@ import {
   TableHeader,
   TableRow
 } from "@app/components/v3";
+import { PageHeader } from "@app/components/v3/platform";
 import {
   getUserTablePreference,
   PreferenceKey,
@@ -40,9 +40,11 @@ import { useListPamPendingMyApproval } from "@app/hooks/api/pam";
 import { TPamAccessRequest } from "@app/hooks/api/pam/types";
 import { ProjectType } from "@app/hooks/api/projects/types";
 
+import { AccessTypeBadge } from "../components/AccessTypeBadge";
 import { AccountPlatformIcon } from "../components/AccountPlatformIcon";
 import { getRequestStatusInfo } from "../components/approvalRequestStatus";
 import { formatDuration } from "../components/formatDuration";
+import { getRequesterSubtitle } from "../components/requesterDisplay";
 import { ApprovalRequestDetailSheet } from "./components/ApprovalRequestDetailSheet";
 
 const RequestRow = ({
@@ -60,7 +62,7 @@ const RequestRow = ({
       <TableCell className="h-[50px]">
         <div className="flex flex-col">
           <span className="text-sm">{request.requesterName}</span>
-          <span className="text-xs text-muted">{request.requesterEmail}</span>
+          <span className="text-xs text-muted">{getRequesterSubtitle(request)}</span>
         </div>
       </TableCell>
       <TableCell className="text-sm">
@@ -70,6 +72,9 @@ const RequestRow = ({
           )}
           {request.accountName ?? "-"}
         </div>
+      </TableCell>
+      <TableCell>
+        <AccessTypeBadge accessType={request.accessType} />
       </TableCell>
       <TableCell className="text-sm">{request.folderName ?? "-"}</TableCell>
       <TableCell className="text-sm">{formatDuration(duration)}</TableCell>
@@ -128,6 +133,7 @@ const RequestTable = ({
         <TableRow>
           <TableHead>Requester</TableHead>
           <TableHead>Account</TableHead>
+          <TableHead>Requesting</TableHead>
           <TableHead>Folder</TableHead>
           <TableHead>Duration</TableHead>
           <TableHead>Requested</TableHead>
@@ -138,7 +144,7 @@ const RequestTable = ({
         {isPending &&
           Array.from({ length: 5 }).map((_, i) => (
             <TableRow key={`skeleton-${i + 1}`}>
-              {Array.from({ length: 6 }).map((__, j) => (
+              {Array.from({ length: 7 }).map((__, j) => (
                 <TableCell key={`cell-${j + 1}`}>
                   <Skeleton className="h-4 w-full" />
                 </TableCell>

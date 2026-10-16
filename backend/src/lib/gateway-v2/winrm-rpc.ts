@@ -1,9 +1,11 @@
 import { postGatewayRpc } from "./gateway-rpc";
+import { GatewayFailureKind } from "./test-connection-rpc";
 
 export enum WinRmRpcEndpoint {
   Test = "/v1/test-connection",
   DeliverFiles = "/v1/deliver-files",
   RemoveFiles = "/v1/remove-files",
+  RunCommand = "/v1/run-command",
   EnumerateAccounts = "/v1/enumerate-accounts",
   EnumerateDependencies = "/v1/enumerate-dependencies",
   RotateCredential = "/v1/rotate-credential",
@@ -31,9 +33,16 @@ export type WinRmRpcRequestBody = {
 export type WinRmTestResult = { ok: boolean };
 export type WinRmDeliverResult = { delivered: number };
 export type WinRmRemoveResult = { removed: number };
+export type WinRmRunCommandResult = { stdout: string; stderr: string; exitCode: number };
 
 export type WinRmRpcSuccess<T> = { ok: true; status: number; result: T };
-export type WinRmRpcFailure = { ok: false; status: number; errorMessage: string };
+export type WinRmRpcFailure = {
+  ok: false;
+  status: number;
+  errorMessage: string;
+  // Older gateways send nothing.
+  kind?: GatewayFailureKind | null;
+};
 export type WinRmRpcResponse<T> = WinRmRpcSuccess<T> | WinRmRpcFailure;
 
 // Must exceed the gateway's own connection deadline (op 120s + 15s flush margin) so a gateway-side timeout
@@ -73,6 +82,11 @@ export const callWinRmEndpoint = async <T>(args: {
     }
     return { ok: true, status, result };
   }
-  const errEnv = (parsed as { error?: { message?: string } }).error;
-  return { ok: false, status, errorMessage: errEnv?.message ?? `Gateway returned HTTP ${status}` };
+  const errEnv = (parsed as { error?: { message?: string; kind?: GatewayFailureKind } }).error;
+  return {
+    ok: false,
+    status,
+    errorMessage: errEnv?.message ?? `Gateway returned HTTP ${status}`,
+    kind: errEnv?.kind ?? null
+  };
 };

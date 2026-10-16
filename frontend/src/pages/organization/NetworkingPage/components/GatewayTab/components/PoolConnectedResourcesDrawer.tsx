@@ -1,7 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { ExternalLinkIcon } from "lucide-react";
 
-import { Spinner } from "@app/components/v2";
 import {
   Accordion,
   AccordionContent,
@@ -12,7 +11,8 @@ import {
   SheetContent,
   SheetDescription,
   SheetHeader,
-  SheetTitle
+  SheetTitle,
+  Spinner
 } from "@app/components/v3";
 import { useOrganization } from "@app/context";
 import {
@@ -47,15 +47,15 @@ type ResourceRowProps = {
 
 const ResourceRow = ({ name, subtitle, to, params, isLast }: ResourceRowProps) => {
   const className = `flex items-center justify-between px-4 py-2.5 ${
-    to ? "transition-colors hover:bg-mineshaft-700/30" : ""
-  } ${!isLast ? "border-b border-mineshaft-600" : ""}`;
+    to ? "transition-colors hover:bg-surface-hover/30" : ""
+  } ${!isLast ? "border-b border-border-control" : ""}`;
   const inner = (
     <>
       <div className="flex flex-col gap-0.5">
-        <span className="text-sm text-mineshaft-100">{name}</span>
-        <span className="text-xs text-mineshaft-400">{subtitle}</span>
+        <span className="text-sm text-foreground">{name}</span>
+        <span className="text-xs text-muted">{subtitle}</span>
       </div>
-      {to ? <ExternalLinkIcon className="size-3.5 text-mineshaft-400" /> : null}
+      {to ? <ExternalLinkIcon className="size-3.5 text-muted" /> : null}
     </>
   );
 
@@ -87,7 +87,7 @@ export const PoolConnectedResourcesDrawer = ({ isOpen, onOpenChange, poolId, poo
   return (
     <Sheet open={isOpen} onOpenChange={onOpenChange}>
       <SheetContent className="overflow-y-auto">
-        <SheetHeader className="border-b border-mineshaft-600">
+        <SheetHeader className="border-b border-border-control">
           <SheetTitle>Connected Resources</SheetTitle>
           <SheetDescription>{poolName}</SheetDescription>
         </SheetHeader>
@@ -99,7 +99,7 @@ export const PoolConnectedResourcesDrawer = ({ isOpen, onOpenChange, poolId, poo
             </div>
           ) : (
             <div className="flex flex-col gap-4">
-              <p className="text-sm text-mineshaft-300">
+              <p className="text-sm text-label">
                 {totalCount > 0 ? (
                   <>
                     {totalCount} resource{totalCount !== 1 ? "s" : ""} connected
@@ -117,7 +117,7 @@ export const PoolConnectedResourcesDrawer = ({ isOpen, onOpenChange, poolId, poo
                         <span className="flex-1">Kubernetes Auth</span>
                         <Badge variant="neutral">{resources?.kubernetesAuths.length}</Badge>
                       </AccordionTrigger>
-                      <AccordionContent className="p-0">
+                      <AccordionContent className="group-data-[variant=default]/accordion:p-0">
                         {resources?.kubernetesAuths.map((auth, idx) => (
                           <ResourceRow
                             key={auth.id}
@@ -141,7 +141,7 @@ export const PoolConnectedResourcesDrawer = ({ isOpen, onOpenChange, poolId, poo
                         <span className="flex-1">PKI Discovery</span>
                         <Badge variant="neutral">{resources?.pkiDiscoveryConfigs.length}</Badge>
                       </AccordionTrigger>
-                      <AccordionContent className="p-0">
+                      <AccordionContent className="group-data-[variant=default]/accordion:p-0">
                         {resources?.pkiDiscoveryConfigs.map((r, idx) => (
                           <ResourceRow
                             key={r.id}
@@ -160,7 +160,7 @@ export const PoolConnectedResourcesDrawer = ({ isOpen, onOpenChange, poolId, poo
                         <span className="flex-1">App Connections</span>
                         <Badge variant="neutral">{resources?.appConnections.length}</Badge>
                       </AccordionTrigger>
-                      <AccordionContent className="p-0">
+                      <AccordionContent className="group-data-[variant=default]/accordion:p-0">
                         {resources?.appConnections.map((r, idx) => (
                           <ResourceRow
                             key={r.id}
@@ -179,7 +179,7 @@ export const PoolConnectedResourcesDrawer = ({ isOpen, onOpenChange, poolId, poo
                         <span className="flex-1">Dynamic Secrets</span>
                         <Badge variant="neutral">{resources?.dynamicSecrets.length}</Badge>
                       </AccordionTrigger>
-                      <AccordionContent className="p-0">
+                      <AccordionContent className="group-data-[variant=default]/accordion:p-0">
                         {resources?.dynamicSecrets.map((r, idx) => (
                           <ResourceRow
                             key={r.id}

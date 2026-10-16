@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { Terminal } from "@xterm/xterm";
+import { type ITheme, Terminal } from "@xterm/xterm";
 import { Readline } from "xterm-readline";
 
+import { type ResolvedTheme, useTheme } from "@app/components/v3/platform/ThemeProvider";
 import { apiRequest } from "@app/config/request";
 import { MfaSessionStatus, TMfaSessionStatusResponse } from "@app/hooks/api/mfaSession/types";
 import { PamAccountType } from "@app/hooks/api/pam";
@@ -17,8 +18,83 @@ type UseWebAccessSessionOptions = {
   accountType: string;
   reason?: string;
   mfaSessionId?: string;
-  onSessionEnd?: () => void;
+  onSessionEnd?: (endReason?: string) => void;
 };
+
+const DARK_TERMINAL_THEME: ITheme = {
+  background: "#0d1117",
+  foreground: "#c9d1d9",
+  cursor: "#58a6ff",
+  cursorAccent: "#0d1117",
+  selectionBackground: "#264f78",
+  black: "#0d1117",
+  red: "#ff7b72",
+  green: "#3fb950",
+  yellow: "#d29922",
+  blue: "#58a6ff",
+  magenta: "#bc8cff",
+  cyan: "#76e3ea",
+  white: "#c9d1d9",
+  brightBlack: "#484f58",
+  brightRed: "#ffa198",
+  brightGreen: "#56d364",
+  brightYellow: "#e3b341",
+  brightBlue: "#79c0ff",
+  brightMagenta: "#d2a8ff",
+  brightCyan: "#b3f0ff",
+  brightWhite: "#f0f6fc"
+};
+
+const getLightTerminalTheme = (): ITheme => {
+  const styles = getComputedStyle(document.documentElement);
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+
+  const resolveToken = (token: string, fallback: string) => {
+    const value = styles.getPropertyValue(token).trim();
+    if (!value || !context) return fallback;
+    context.fillStyle = fallback;
+    context.fillStyle = value;
+    return context.fillStyle;
+  };
+
+  const background = resolveToken("--color-background", "#f7f7f7");
+  const foreground = resolveToken("--color-foreground", "#19191c");
+  const muted = resolveToken("--color-muted", "#707174");
+  const danger = resolveToken("--color-danger", "#b42318");
+  const success = resolveToken("--color-success", "#1a7f37");
+  const warning = resolveToken("--color-warning", "#8a5a00");
+  const info = resolveToken("--color-info", "#0969da");
+  const magenta = resolveToken("--color-product-ss", "#8250df");
+  const cyan = resolveToken("--color-product-kms", "#087f5b");
+
+  return {
+    background,
+    foreground,
+    cursor: resolveToken("--color-project", "#4f6f00"),
+    cursorAccent: background,
+    selectionBackground: resolveToken("--color-surface-selected", "#d8dee4"),
+    black: foreground,
+    red: danger,
+    green: success,
+    yellow: warning,
+    blue: info,
+    magenta,
+    cyan,
+    white: muted,
+    brightBlack: muted,
+    brightRed: danger,
+    brightGreen: success,
+    brightYellow: warning,
+    brightBlue: info,
+    brightMagenta: magenta,
+    brightCyan: cyan,
+    brightWhite: foreground
+  };
+};
+
+const getTerminalTheme = (resolvedTheme: ResolvedTheme): ITheme =>
+  resolvedTheme === "light" ? getLightTerminalTheme() : DARK_TERMINAL_THEME;
 
 export const useWebAccessSession = ({
   accountId,
@@ -27,6 +103,7 @@ export const useWebAccessSession = ({
   mfaSessionId,
   onSessionEnd
 }: UseWebAccessSessionOptions) => {
+  const { resolvedTheme } = useTheme();
   const [containerEl, setContainerEl] = useState<HTMLDivElement | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
@@ -40,14 +117,23 @@ export const useWebAccessSession = ({
   const readLoopActiveRef = useRef(false);
   const nextPromptResolverRef = useRef<((prompt: string) => void) | null>(null);
   const nextPromptRejecterRef = useRef<((reason: Error) => void) | null>(null);
+  const resolvedThemeRef = useRef(resolvedTheme);
+  resolvedThemeRef.current = resolvedTheme;
 
   const onSessionEndRef = useRef(onSessionEnd);
+  const endReasonRef = useRef<string | undefined>(undefined);
   const submittedReasonRef = useRef<string | undefined>(reason);
   const mfaSessionIdRef = useRef<string | undefined>(mfaSessionId);
 
   useEffect(() => {
     onSessionEndRef.current = onSessionEnd;
   }, [onSessionEnd]);
+
+  useEffect(() => {
+    if (terminalRef.current) {
+      terminalRef.current.options.theme = getTerminalTheme(resolvedTheme);
+    }
+  }, [resolvedTheme]);
 
   const adjustWidthForOutput = useCallback(
     (output: string, terminal: Terminal, fitAddon: FitAddon, container: HTMLDivElement) => {
@@ -85,6 +171,7 @@ export const useWebAccessSession = ({
       const { protocol, host } = window.location;
       const wsProtocol = protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = `${wsProtocol}//${host}/api/v1/pam/accounts/${accountId}/web-access?ticket=${encodeURIComponent(ticket)}`;
+      endReasonRef.current = undefined;
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
@@ -168,6 +255,7 @@ export const useWebAccessSession = ({
         }
 
         if (msg.type === WsMessageType.SessionEnd) {
+          endReasonRef.current = msg.reason;
           terminal.write(`\r\n${msg.reason.replace(/\r?\n/g, "\r\n")}\r\n`);
           return;
         }
@@ -207,7 +295,7 @@ export const useWebAccessSession = ({
           terminalRef.current.options.disableStdin = true;
         }
         setIsConnected(false);
-        onSessionEndRef.current?.();
+        onSessionEndRef.current?.(endReasonRef.current);
       };
 
       ws.onerror = () => {
@@ -394,30 +482,8 @@ export const useWebAccessSession = ({
     const terminal = new Terminal({
       cursorBlink: true,
       fontSize: 14,
-      fontFamily: '"JetBrains Mono", "Fira Code", Menlo, Monaco, "Courier New", monospace',
-      theme: {
-        background: "#0d1117",
-        foreground: "#c9d1d9",
-        cursor: "#58a6ff",
-        cursorAccent: "#0d1117",
-        selectionBackground: "#264f78",
-        black: "#0d1117",
-        red: "#ff7b72",
-        green: "#3fb950",
-        yellow: "#d29922",
-        blue: "#58a6ff",
-        magenta: "#bc8cff",
-        cyan: "#76e3ea",
-        white: "#c9d1d9",
-        brightBlack: "#484f58",
-        brightRed: "#ffa198",
-        brightGreen: "#56d364",
-        brightYellow: "#e3b341",
-        brightBlue: "#79c0ff",
-        brightMagenta: "#d2a8ff",
-        brightCyan: "#b3f0ff",
-        brightWhite: "#f0f6fc"
-      },
+      fontFamily: getComputedStyle(containerEl).getPropertyValue("--font-mono").trim(),
+      theme: getTerminalTheme(resolvedThemeRef.current),
       scrollback: 10000,
       allowProposedApi: true
     });
@@ -470,7 +536,7 @@ export const useWebAccessSession = ({
         }
       });
     } else {
-      // Non-SSH (PostgreSQL, Redis): use xterm-readline for full line-editing support
+      // Redis: use xterm-readline for full line-editing support
       const readlineAddon = new Readline();
       terminal.loadAddon(readlineAddon);
       readlineRef.current = readlineAddon;

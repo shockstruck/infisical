@@ -95,7 +95,7 @@ export const LoginSsoPage = ({ type }: Props) => {
               >
                 <ChevronLeft />
               </IconButton>
-              <CardTitle className="ml-0.5 bg-linear-to-b from-white to-bunker-200 bg-clip-text font-alliance text-2xl font-normal text-transparent">
+              <CardTitle className="ml-0.5 bg-linear-to-b from-foreground-inverse to-foreground-soft bg-clip-text font-alliance text-2xl font-normal text-transparent">
                 {type} Login
               </CardTitle>
             </div>
@@ -105,6 +105,7 @@ export const LoginSsoPage = ({ type }: Props) => {
               <Field>
                 <FieldLabel htmlFor={`${type.toLowerCase()}-work-email`}>Work Email</FieldLabel>
                 <Input
+                  variant="outlined"
                   id={`${type.toLowerCase()}-work-email`}
                   value={workEmail}
                   onChange={(event) => setWorkEmail(event.target.value)}

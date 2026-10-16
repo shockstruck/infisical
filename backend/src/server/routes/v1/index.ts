@@ -8,9 +8,14 @@ import {
 import { registerCmekRouter } from "@app/server/routes/v1/cmek-router";
 import { registerDashboardRouter } from "@app/server/routes/v1/dashboard-router";
 import { registerSecretSyncRouter, SECRET_SYNC_REGISTER_ROUTER_MAP } from "@app/server/routes/v1/secret-sync-routers";
+import {
+  registerSecretValidationRuleRouter,
+  SECRET_VALIDATION_RULE_REGISTER_ROUTER_MAP
+} from "@app/server/routes/v1/secret-validation-rule-routers";
 
 import { registerAccountRecoveryRouter } from "./account-recovery-router";
 import { registerAdminRouter } from "./admin-router";
+import { registerAlertRouter } from "./alert-router";
 import { registerAnnouncementRouter } from "./announcement-router";
 import { APPROVAL_POLICY_REGISTER_ROUTER_MAP } from "./approval-policy-routers";
 import { registerAuthRoutes } from "./auth-router";
@@ -87,7 +92,6 @@ import { SECRET_REMINDER_REGISTER_ROUTER_MAP } from "./reminder-routers";
 import { registerSecretRequestsRouter } from "./secret-requests-router";
 import { registerSecretSharingRouter } from "./secret-sharing-router";
 import { registerSecretTagRouter } from "./secret-tag-router";
-import { registerSecretValidationRuleRouter } from "./secret-validation-rule-router";
 import { registerSignerMembershipRoutes } from "./signer-membership-routers";
 import { registerSignerRouter } from "./signer-routers";
 import { registerSlackRouter } from "./slack-router";
@@ -138,6 +142,7 @@ export const registerV1Routes = async (server: FastifyZodProvider) => {
   await server.register(registerOrgAdminRouter, { prefix: "/organization-admin" });
   await server.register(registerUserRouter, { prefix: "/user" });
   await server.register(registerNotificationRouter, { prefix: "/notifications" });
+  await server.register(registerAlertRouter, { prefix: "/alerts" });
   await server.register(registerAnnouncementRouter, { prefix: "/announcement" });
   await server.register(registerInviteOrgRouter, { prefix: "/invite-org" });
   await server.register(registerUserActionRouter, { prefix: "/user-action" });
@@ -176,7 +181,6 @@ export const registerV1Routes = async (server: FastifyZodProvider) => {
       await projectRouter.register(registerProjectIdentityRouter);
       await projectRouter.register(registerProjectEnvRouter);
       await projectRouter.register(registerSecretTagRouter);
-      await projectRouter.register(registerSecretValidationRuleRouter);
       await projectRouter.register(registerGroupProjectRouter);
       await projectRouter.register(registerDeprecatedIdentityProjectMembershipRouter);
     },
@@ -347,6 +351,17 @@ export const registerV1Routes = async (server: FastifyZodProvider) => {
       }
     },
     { prefix: "/secret-syncs" }
+  );
+
+  await server.register(
+    async (validationRuleRouter) => {
+      await validationRuleRouter.register(registerSecretValidationRuleRouter);
+
+      for await (const [type, router] of Object.entries(SECRET_VALIDATION_RULE_REGISTER_ROUTER_MAP)) {
+        await router(withRoutePrefix(validationRuleRouter, `/${type}`));
+      }
+    },
+    { prefix: "/secret-validation-rules" }
   );
 
   await server.register(

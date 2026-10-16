@@ -1,5 +1,6 @@
 import {
   PamAccessStatus,
+  PamAccountAccessibilityIssue,
   PamAccountType,
   PamResourcePermissionActions,
   TAccessiblePamAccount,
@@ -8,6 +9,9 @@ import {
 } from "@app/hooks/api/pam";
 import { PamSheetTab } from "@app/hooks/usePamSheetState";
 
+import { AccountHealthBadge } from "../../components/AccountHealthBadge";
+import { AccountMaskingBadge } from "../../components/AccountMaskingBadge";
+import { AccountStaleBadge } from "../../components/AccountStaleBadge";
 import { PamAccountRow } from "../../components/PamAccountRow";
 import { AccountAccessibilityBadgeWithPermission } from "./AccountAccessibilityBadgeWithPermission";
 import { AccountActionsMenu } from "./AccountActionsMenu";
@@ -18,7 +22,10 @@ type Props = {
   onOpenAccount: (accountId: string, tab?: PamSheetTab) => void;
   onLaunchAccount: (account: TAccessiblePamAccount) => void;
   onRequestAccess: (account: TAccessiblePamAccount) => void;
+  onViewCredentials: (account: TAccessiblePamAccount) => void;
+  onRequestCredentialAccess: (account: TAccessiblePamAccount) => void;
   onDeleteAccount: (accountId: string, accountName: string, accountType: PamAccountType) => void;
+  indented?: boolean;
 };
 
 export const FolderAccountRow = ({
@@ -27,7 +34,10 @@ export const FolderAccountRow = ({
   onOpenAccount,
   onLaunchAccount,
   onRequestAccess,
-  onDeleteAccount
+  onViewCredentials,
+  onRequestCredentialAccess,
+  onDeleteAccount,
+  indented
 }: Props) => {
   // Permissions come embedded in the list item, so no per-account request is made here.
   const { can } = usePamAccountActionsFromPermissions(account.permissions);
@@ -57,6 +67,10 @@ export const FolderAccountRow = ({
     requireReason: account.requireReason,
     accessStatus,
     grantExpiresAt: account.grantExpiresAt,
+    pendingRequestId: account.pendingRequestId,
+    canBreakGlass: account.canBreakGlass,
+    credentialAccessStatus: account.credentialAccessStatus,
+    credentialPendingRequestId: account.credentialPendingRequestId,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt
   };
@@ -73,12 +87,17 @@ export const FolderAccountRow = ({
       launchDisabledReason={launchDisabledReason}
       onLaunch={() => onLaunchAccount(launchableAccount)}
       onRequestAccess={() => onRequestAccess(launchableAccount)}
-      indented
+      indented={indented}
       accessibilityBadge={
-        <AccountAccessibilityBadgeWithPermission
-          canEdit={can(PamResourcePermissionActions.EditAccounts)}
-          issues={account.accessibilityIssues}
-        />
+        <>
+          <AccountAccessibilityBadgeWithPermission
+            canEdit={can(PamResourcePermissionActions.EditAccounts)}
+            issues={account.accessibilityIssues}
+          />
+          <AccountStaleBadge isStale={account.isStale} />
+          <AccountMaskingBadge warnings={account.warnings} />
+          <AccountHealthBadge status={account.heartbeatStatus} enabled={account.heartbeatEnabled} />
+        </>
       }
       actions={
         <AccountActionsMenu
@@ -86,9 +105,16 @@ export const FolderAccountRow = ({
           accountType={accountType}
           isAccessible={account.isAccessible}
           requiresApproval={requiresApproval}
+          hasApprovalConfig={
+            !account.accessibilityIssues.includes(PamAccountAccessibilityIssue.NoApprovalConfig)
+          }
           accessStatus={accessStatus}
+          supportsCredentialReveal={account.supportsCredentialReveal}
+          credentialAccessStatus={account.credentialAccessStatus}
           onLaunch={() => onLaunchAccount(launchableAccount)}
           onRequestAccess={() => onRequestAccess(launchableAccount)}
+          onViewCredentials={() => onViewCredentials(launchableAccount)}
+          onRequestCredentialAccess={() => onRequestCredentialAccess(launchableAccount)}
           onOpenTab={(tab) => onOpenAccount(account.id, tab)}
           onDelete={() => onDeleteAccount(account.id, account.name, accountType)}
         />

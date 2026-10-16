@@ -3,12 +3,15 @@ import { SecretRotation } from "@app/ee/services/secret-rotation-v2/secret-rotat
 import { registerAuth0ClientSecretRotationRouter } from "./auth0-client-secret-rotation-router";
 import { registerAwsIamUserSecretRotationRouter } from "./aws-iam-user-secret-rotation-router";
 import { registerAzureClientSecretRotationRouter } from "./azure-client-secret-rotation-router";
+import { registerCloudflareApiTokenRotationRouter } from "./cloudflare-api-token-rotation-router";
+import { registerCloudflareR2AccessKeyRotationRouter } from "./cloudflare-r2-access-key-rotation-router";
 import { registerConvexAccessKeyRotationRouter } from "./convex-access-key-rotation-router";
 import { registerDatabricksServicePrincipalSecretRotationRouter } from "./databricks-service-principal-secret-rotation-router";
 import { registerDatadogApiKeyRotationRouter } from "./datadog-api-key-rotation-router";
 import { registerDatadogApplicationKeySecretRotationRouter } from "./datadog-application-key-secret-rotation-router";
 import { registerDbtServiceTokenRotationRouter } from "./dbt-service-token-rotation-router";
 import { registerFireworksApiKeyRotationRouter } from "./fireworks-api-key-rotation-router";
+import { registerGcpServiceAccountKeyRotationRouter } from "./gcp-service-account-key-rotation-router";
 import { registerHpIloRotationRouter } from "./hp-ilo-rotation-router";
 import { registerLdapPasswordRotationRouter } from "./ldap-password-rotation-router";
 import { registerLiteLLMApiKeyRotationRouter } from "./litellm-api-key-rotation-router";
@@ -23,6 +26,7 @@ import { registerPostgresCredentialsRotationRouter } from "./postgres-credential
 import { registerRedisCredentialsRotationRouter } from "./redis-credentials-rotation-router";
 import { registerSalesforceOauthCredentialsRotationRouter } from "./salesforce-oauth-credentials-rotation-router";
 import { registerSnowflakeUserKeyPairRotationRouter } from "./snowflake-user-key-pair-rotation-router";
+import { registerStripeApiKeyRotationRouter } from "./stripe-api-key-rotation-router";
 import { registerSupabaseApiKeyRotationRouter } from "./supabase-api-key-rotation-router";
 import { registerUnixLinuxLocalAccountRotationRouter } from "./unix-linux-local-account-rotation-router";
 import { registerWindowsLocalAccountRotationRouter } from "./windows-local-account-rotation-router";
@@ -58,5 +62,9 @@ export const SECRET_ROTATION_REGISTER_ROUTER_MAP: Record<
   [SecretRotation.DatadogApiKey]: registerDatadogApiKeyRotationRouter,
   [SecretRotation.ConvexAccessKey]: registerConvexAccessKeyRotationRouter,
   [SecretRotation.FireworksApiKey]: registerFireworksApiKeyRotationRouter,
-  [SecretRotation.SnowflakeUserKeyPair]: registerSnowflakeUserKeyPairRotationRouter
+  [SecretRotation.SnowflakeUserKeyPair]: registerSnowflakeUserKeyPairRotationRouter,
+  [SecretRotation.CloudflareApiToken]: registerCloudflareApiTokenRotationRouter,
+  [SecretRotation.CloudflareR2AccessKey]: registerCloudflareR2AccessKeyRotationRouter,
+  [SecretRotation.StripeApiKey]: registerStripeApiKeyRotationRouter,
+  [SecretRotation.GcpServiceAccountKey]: registerGcpServiceAccountKeyRotationRouter
 };

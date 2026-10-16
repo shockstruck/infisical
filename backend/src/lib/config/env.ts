@@ -3,13 +3,13 @@ import { z } from "zod";
 import { THsmServiceFactory } from "@app/ee/services/hsm/hsm-service";
 import { crypto } from "@app/lib/crypto/cryptography";
 import { initializePqcSupport } from "@app/lib/crypto/pqc";
-import { QueueWorkerProfile } from "@app/lib/types";
+import { RunMode } from "@app/lib/types";
 import { TKmsRootConfigDALFactory } from "@app/services/kms/kms-root-config-dal";
 import { TSuperAdminDALFactory } from "@app/services/super-admin/super-admin-dal";
 
 import { BadRequestError } from "../errors";
 import { removeTrailingSlash } from "../fn";
-import { CustomLogger } from "../logger/logger";
+import { CustomLogger, logger as rootLogger } from "../logger/logger";
 import { ms } from "../ms";
 import { zpStr } from "../zod";
 
@@ -36,6 +36,122 @@ const zodStrBool = z
   .string()
   .optional()
   .transform((val) => val === "true");
+
+// Which responsibilities this process takes on, as a comma-separated list. Splitting the fleet by
+// run mode is what lets an API pod, a general worker pod and a secret scanning pod share one image.
+export const runModesSchema = zpStr(z.string().optional())
+  .transform((val) =>
+    (val ?? Object.values(RunMode).join(","))
+      .split(",")
+      .map((mode) => mode.trim().toLowerCase())
+      .filter(Boolean)
+  )
+  .pipe(
+    z
+      .nativeEnum(RunMode, {
+        errorMap: () => ({
+          message: `INFISICAL_RUN_MODES must be a comma-separated list of: ${Object.values(RunMode).join(", ")}`
+        })
+      })
+      .array()
+      .nonempty("INFISICAL_RUN_MODES must name at least one run mode")
+  );
+
+/**
+ * Everything a secret scan spends outside the clone and the scan itself: measuring the clone
+ * (30s ceiling), writing findings, notifications and audit logs, and queue/DB overhead. Used as
+ * headroom when validating the stuck-scan threshold so the reaper can't reach a healthy scan, and
+ * as the scan lock TTL headroom so the lock outlives any scan the reaper would consider healthy.
+ */
+export const SECRET_SCANNING_SCAN_OVERHEAD = ms("5m");
+
+/**
+ * Ceiling for the `git rev-list` pass that plans a full scan's commit batches. Enumeration is a
+ * traversal with no patch generation, so it is bounded separately from the scan rather than
+ * spending any of the customer-tunable scan budget — but it runs between the clone and the first
+ * progress update, so the stuck-scan budget has to carry it.
+ */
+export const SECRET_SCANNING_COMMIT_ENUMERATION_TIMEOUT = ms("5m");
+
+/**
+ * Everything a scan can spend between two progress updates that is not the customer's clone and
+ * scan timeouts: enumerating the commits to batch, and the measurement and bookkeeping around them.
+ */
+export const SECRET_SCANNING_FIXED_SCAN_HEADROOM =
+  SECRET_SCANNING_COMMIT_ENUMERATION_TIMEOUT + SECRET_SCANNING_SCAN_OVERHEAD;
+
+/**
+ * The longest a healthy scan can go without recording progress: the clone, the commit enumeration
+ * and measurement that follow it, one `infisical scan` invocation, and the bookkeeping around them.
+ * The stuck-scan validation and the full-scan lease TTL both key off it, so they cannot drift apart.
+ */
+export const getSecretScanningScanBudgetMs = (timeouts: {
+  SECRET_SCANNING_CLONE_TIMEOUT: number;
+  SECRET_SCANNING_SCAN_TIMEOUT: number;
+}) =>
+  timeouts.SECRET_SCANNING_CLONE_TIMEOUT + timeouts.SECRET_SCANNING_SCAN_TIMEOUT + SECRET_SCANNING_FIXED_SCAN_HEADROOM;
+
+const zodTimeoutMs = ({
+  envVar,
+  description,
+  defaultValue,
+  legacyMsEnvVar
+}: {
+  envVar: string;
+  description: string;
+  defaultValue: string;
+  // only for a timeout that predates this helper; a new one has no deprecated spelling to honour
+  legacyMsEnvVar?: string;
+}) =>
+  zpStr(
+    z
+      .string()
+      .optional()
+      .describe(description)
+      .transform((val, ctx) => {
+        const legacyValue = legacyMsEnvVar ? process.env[legacyMsEnvVar]?.trim() || undefined : undefined;
+        // the singleton logger is undefined on the first parse, which happens during telemetry setup
+        if (legacyValue) {
+          (rootLogger ?? console).warn(
+            `Warning: The environment variable ${legacyMsEnvVar} has been deprecated. Please use ${envVar} instead.`
+          );
+        }
+
+        const raw = val ?? legacyValue ?? defaultValue;
+
+        const duration = ms(raw);
+        if (duration === undefined || duration < 1) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              raw === legacyValue
+                ? `Invalid value "${raw}" in ${legacyMsEnvVar}. Expected a positive number of milliseconds.`
+                : `Invalid duration "${raw}" in ${envVar}. Expected a positive duration string such as "30s", "10m" or "6h".`
+          });
+          return z.NEVER;
+        }
+
+        return duration;
+      })
+  );
+
+export const secretScanningTimeoutsSchema = z.object({
+  SECRET_SCANNING_SCAN_TIMEOUT: zodTimeoutMs({
+    envVar: "SECRET_SCANNING_SCAN_TIMEOUT",
+    description: "Wall-clock ceiling for a single `infisical scan` invocation before its process group is killed",
+    defaultValue: "10m",
+    legacyMsEnvVar: "SECRET_SCANNING_SCAN_TIMEOUT_MS"
+  }),
+  SECRET_SCANNING_CLONE_TIMEOUT: zodTimeoutMs({
+    envVar: "SECRET_SCANNING_CLONE_TIMEOUT",
+    description: "Wall-clock ceiling for a single `git clone` invocation before its process group is killed",
+    defaultValue: "10m",
+    legacyMsEnvVar: "SECRET_SCANNING_CLONE_TIMEOUT_MS"
+  })
+});
+
+export const getSecretScanningStuckScanTimeout = (data: z.infer<typeof secretScanningTimeoutsSchema>) =>
+  getSecretScanningScanBudgetMs(data);
 
 const databaseReadReplicaSchema = z
   .object({
@@ -192,12 +308,16 @@ const envSchema = z
     // TODO(akhilmhdh): will be changed to one
     ENCRYPTION_KEY: zpStr(z.string().optional()),
     ROOT_ENCRYPTION_KEY: zpStr(z.string().optional()),
-    QUEUE_WORKERS_ENABLED: zodStrBool.default("true"),
-    QUEUE_WORKER_PROFILE: z.nativeEnum(QueueWorkerProfile).default(QueueWorkerProfile.All),
+    // A convergence window, not a rollback window: it lets instances that have not restarted onto the
+    // new key keep booting, and covers a new key that turns out to be lost. Then the old key is gone.
+    KMS_ROOT_KEY_RETENTION_DAYS: z.coerce.number().int().min(1).max(90).default(7),
+    INFISICAL_RUN_MODES: runModesSchema,
     HTTPS_ENABLED: zodStrBool,
     ROTATION_DEVELOPMENT_MODE: zodStrBool.default("false").optional(),
     DAILY_RESOURCE_CLEAN_UP_DEVELOPMENT_MODE: zodStrBool.default("false").optional(),
     BDD_NOCK_API_ENABLED: zodStrBool.default("false").optional(),
+
+    OPENAPI_FULL_SPEC: zodStrBool.default("false").optional(),
     ACME_DEVELOPMENT_MODE: zodStrBool.default("false").optional(),
     ACME_SKIP_UPSTREAM_VALIDATION: zodStrBool.default("false").optional(),
     ACME_DEVELOPMENT_HTTP01_CHALLENGE_HOST_OVERRIDES: zpStr(
@@ -242,10 +362,7 @@ const envSchema = z
     SMTP_CUSTOM_CA_CERT: zpStr(
       z.string().optional().describe("Base64 encoded custom CA certificate PEM(s) for the SMTP server")
     ),
-    COOKIE_SECRET_SIGN_KEY: z
-      .string()
-      .min(32)
-      .default("#5VihU%rbXHcHwWwCot5L3vyPsx$7dWYw^iGk!EJg2bC*f$PD$%KCqx^R@#^LSEf"),
+    COOKIE_SECRET_SIGN_KEY: zpStr(z.string().min(32).optional()),
 
     // Ensure that the SITE_URL never ends with a trailing slash
     SITE_URL: zpStr(z.string().transform((val) => (val ? removeTrailingSlash(val) : val))).optional(),
@@ -344,19 +461,43 @@ const envSchema = z
     SECRET_SCANNING_PRIVATE_KEY: zpStr(z.string().optional()),
     SECRET_SCANNING_ORG_WHITELIST: zpStr(z.string().optional()),
     SECRET_SCANNING_GIT_APP_SLUG: zpStr(z.string().default("infisical-radar")),
+    ...secretScanningTimeoutsSchema.shape,
+    SECRET_SCANNING_MEMORY_LIMIT_MB: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .default(2048)
+      .describe(
+        "Soft memory ceiling (GOMEMLIMIT) handed to the Go scanner process. The runtime GCs harder as it approaches the limit rather than growing. Set to 0 to disable."
+      ),
+    SECRET_SCANNING_CPU_THREADS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .default(1)
+      .describe(
+        "CPU thread ceiling for scanning child processes, applied as GOMAXPROCS to the Go scanner and pack.threads to git clone. Both otherwise use every core on the host, so one full scan can saturate the instance. Set to 0 to remove the cap."
+      ),
+    SECRET_SCANNING_COMMIT_BATCH_SIZE: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .default(5_000)
+      .describe(
+        "Commits scanned per `infisical scan` invocation during a full scan. Each batch's findings and resume point are persisted before the next one starts, so a worker killed mid-scan resumes rather than restarting. Set to 0 to scan the whole history in a single invocation."
+      ),
+    SECRET_SCANNING_MAX_REPO_SIZE_MB: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .default(5120)
+      .describe("Repositories larger than this are rejected before/after cloning. Set to 0 to disable."),
     // LICENSE
+    // The License Server host. Serves both the self-hosted token endpoint and the entitlement API.
     LICENSE_SERVER_URL: zpStr(z.string().optional().default("https://portal.infisical.com")),
-    LICENSE_SERVER_KEY: zpStr(z.string().optional()),
     LICENSE_KEY: zpStr(z.string().optional()),
     LICENSE_KEY_OFFLINE: zpStr(z.string().optional()),
-    LICENSE_SERVER_V2_MODE: z.enum(["off", "read-compare", "on"]).default("off"),
-    LICENSE_SERVER_V2_URL: zpStr(z.string().optional()),
     LICENSE_SERVER_V2_SERVICE_KEY: zpStr(z.string().optional()),
-    // When true, new checkouts (adding a payment method) and trials on License Server v1 cloud are
-    // disallowed, pushing orgs onto License Server v2.
-    DISABLE_LICENSE_V1_CLOUD: zodStrBool.default("false"),
-    // CROSS-PROJECT SECRET SHARING
-    CROSS_PROJECT_SECRET_SHARING_ORG_WHITELIST: zpStr(z.string().optional()),
 
     // GENERIC
     STANDALONE_MODE: z
@@ -414,11 +555,6 @@ const envSchema = z
     SHOULD_INIT_PG_QUEUE: zodStrBool.default("false"),
 
     /* Gateway----------------------------------------------------------------------------- */
-    GATEWAY_INFISICAL_STATIC_IP_ADDRESS: zpStr(z.string().optional()),
-    GATEWAY_RELAY_ADDRESS: zpStr(z.string().optional()),
-    GATEWAY_RELAY_REALM: zpStr(z.string().optional()),
-    GATEWAY_RELAY_AUTH_SECRET: zpStr(z.string().optional()),
-
     RELAY_AUTH_SECRET: zpStr(z.string().optional()),
 
     DYNAMIC_SECRET_ALLOW_INTERNAL_IP: zodStrBool.default("false"),
@@ -498,6 +634,11 @@ const envSchema = z
     INF_APP_CONNECTION_HEROKU_OAUTH_CLIENT_ID: zpStr(z.string().optional()),
     INF_APP_CONNECTION_HEROKU_OAUTH_CLIENT_SECRET: zpStr(z.string().optional()),
 
+    // Stripe App Connection
+    INF_APP_CONNECTION_STRIPE_OAUTH_CLIENT_ID: zpStr(z.string().optional()),
+    INF_APP_CONNECTION_STRIPE_SECRET_KEY: zpStr(z.string().optional()),
+    INF_APP_CONNECTION_STRIPE_OAUTH_AUTHORIZE_URL: zpStr(z.string().optional()),
+
     // datadog
     SHOULD_USE_DATADOG_TRACER: zodStrBool.default("false"),
     DATADOG_PROFILING_ENABLED: zodStrBool.default("false"),
@@ -573,15 +714,15 @@ const envSchema = z
   })
   .transform((data) => ({
     ...data,
+    SECRET_SCANNING_STUCK_SCAN_TIMEOUT: getSecretScanningStuckScanTimeout(data),
     SALT_ROUNDS: data.SALT_ROUNDS || data.BCRYPT_SALT_ROUND || 12,
     DISABLE_POSTGRES_AUDIT_LOG_STORAGE:
       data.DISABLE_POSTGRES_AUDIT_LOG_STORAGE ?? data.DISABLE_AUDIT_LOG_STORAGE ?? false,
     DB_READ_REPLICAS: data.DB_READ_REPLICAS
       ? databaseReadReplicaSchema.parse(JSON.parse(data.DB_READ_REPLICAS))
       : undefined,
-    // Inferred from the legacy license server key; needs a new signal once License Server v2 fully replaces it.
-    isCloud: Boolean(data.LICENSE_SERVER_KEY || data.LICENSE_SERVER_V2_SERVICE_KEY),
-    isLicenseDualReadEnabled: data.LICENSE_SERVER_V2_MODE === "read-compare",
+    // Only cloud holds the License Server service key; self-hosted authenticates with a license key.
+    isCloud: Boolean(data.LICENSE_SERVER_V2_SERVICE_KEY),
     isSmtpConfigured: Boolean(data.SMTP_HOST),
     isRedisConfigured: Boolean(data.REDIS_URL || data.REDIS_SENTINEL_HOSTS || data.REDIS_CLUSTER_HOSTS),
     isClickHouseConfigured: Boolean(data.CLICKHOUSE_URL),
@@ -593,8 +734,12 @@ const envSchema = z
       data.NODE_ENV === "development" && data.DAILY_RESOURCE_CLEAN_UP_DEVELOPMENT_MODE,
     isAcmeDevelopmentMode: data.NODE_ENV === "development" && data.ACME_DEVELOPMENT_MODE,
     isProductionMode: data.NODE_ENV === "production" || IS_PACKAGED,
+    isApiRunModeEnabled: data.INFISICAL_RUN_MODES.includes(RunMode.Api),
+    isGeneralWorkerRunModeEnabled: data.INFISICAL_RUN_MODES.includes(RunMode.GeneralWorkers),
+    isSecretScanningRunModeEnabled: data.INFISICAL_RUN_MODES.includes(RunMode.SecretScanning),
     isRedisSentinelMode: Boolean(data.REDIS_SENTINEL_HOSTS),
     isBddNockApiEnabled: data.NODE_ENV !== "production" && data.BDD_NOCK_API_ENABLED,
+    isOpenApiFullSpec: data.NODE_ENV !== "production" && data.OPENAPI_FULL_SPEC,
     REDIS_SENTINEL_HOSTS: data.REDIS_SENTINEL_HOSTS?.trim()
       ?.split(",")
       .map((el) => {
@@ -617,7 +762,7 @@ const envSchema = z
       Boolean(data.SECRET_SCANNING_GIT_APP_ID) &&
       Boolean(data.SECRET_SCANNING_PRIVATE_KEY) &&
       Boolean(data.SECRET_SCANNING_WEBHOOK_SECRET),
-    isSecretScanningV2Configured:
+    isGithubRadarConfigured:
       Boolean(data.INF_APP_CONNECTION_GITHUB_RADAR_APP_ID) &&
       Boolean(data.INF_APP_CONNECTION_GITHUB_RADAR_APP_PRIVATE_KEY) &&
       Boolean(data.INF_APP_CONNECTION_GITHUB_RADAR_APP_SLUG) &&
@@ -629,7 +774,6 @@ const envSchema = z
       Boolean(data.HSM_LIB_PATH) && Boolean(data.HSM_PIN) && Boolean(data.HSM_KEY_LABEL) && data.HSM_SLOT !== undefined,
     samlDefaultOrgSlug: data.DEFAULT_SAML_ORG_SLUG,
     SECRET_SCANNING_ORG_WHITELIST: data.SECRET_SCANNING_ORG_WHITELIST?.split(","),
-    CROSS_PROJECT_SECRET_SHARING_ORG_WHITELIST: data.CROSS_PROJECT_SECRET_SHARING_ORG_WHITELIST?.split(",") ?? [],
     PARAMS_FOLDER_SECRET_DETECTION_ENABLED: (data.PARAMS_FOLDER_SECRET_DETECTION_PATHS?.length ?? 0) > 0,
     INF_APP_CONNECTION_AZURE_DEVOPS_CLIENT_ID:
       data.INF_APP_CONNECTION_AZURE_DEVOPS_CLIENT_ID || data.INF_APP_CONNECTION_AZURE_CLIENT_ID,
@@ -1001,6 +1145,25 @@ export const overwriteSchema: {
       {
         key: "INF_APP_CONNECTION_HEROKU_OAUTH_CLIENT_SECRET",
         description: "The Client Secret of your Heroku application."
+      }
+    ]
+  },
+  stripe: {
+    name: "Stripe",
+    fields: [
+      {
+        key: "INF_APP_CONNECTION_STRIPE_OAUTH_CLIENT_ID",
+        description: "The Client ID of your Stripe app."
+      },
+      {
+        key: "INF_APP_CONNECTION_STRIPE_OAUTH_AUTHORIZE_URL",
+        description:
+          "Optional. Overrides the Stripe App Marketplace install link, which is otherwise derived from the Client ID above. Set it to the test-mode or sandbox link from the Stripe dashboard when the secret key below is not a live-mode key."
+      },
+      {
+        key: "INF_APP_CONNECTION_STRIPE_SECRET_KEY",
+        description:
+          "The secret API key of the Stripe account that owns your Stripe app. Infisical authenticates as this account and names the customer's account with Stripe-Context."
       }
     ]
   },

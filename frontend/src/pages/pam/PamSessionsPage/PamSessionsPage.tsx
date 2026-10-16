@@ -6,8 +6,7 @@ import { format } from "date-fns";
 import { Activity, Ban, SearchIcon, Video } from "lucide-react";
 
 import { createNotification } from "@app/components/notifications";
-import { DeleteActionModal, PageHeader } from "@app/components/v2";
-import { HighlightText } from "@app/components/v2/HighlightText";
+import { HighlightText } from "@app/components/utilities/HighlightText";
 import {
   Badge,
   Button,
@@ -25,6 +24,7 @@ import {
   InputGroupAddon,
   InputGroupInput,
   Pagination,
+  ProviderIcon,
   Select,
   SelectContent,
   SelectItem,
@@ -38,6 +38,7 @@ import {
   TableHeader,
   TableRow
 } from "@app/components/v3";
+import { DeleteConfirmDialog, PageHeader } from "@app/components/v3/platform";
 import { useOrganization, useProject } from "@app/context";
 import {
   getUserTablePreference,
@@ -73,11 +74,16 @@ const TerminateCell = ({
   session: TPamSession;
   onTerminate: (session: TPamSession, e?: React.MouseEvent) => void;
 }) => {
-  const { data: perm } = usePamAccountPermission(session.accountId ?? "");
-  const canTerminate = perm?.permission.can(
-    PamResourcePermissionActions.TerminateSessions,
-    PamResourcePermissionSub.PamResource
+  const { data: perm } = usePamAccountPermission(
+    session.accountId ?? "",
+    Boolean(session.accountId)
   );
+  const canTerminate =
+    !session.accountId ||
+    perm?.permission.can(
+      PamResourcePermissionActions.TerminateSessions,
+      PamResourcePermissionSub.PamResource
+    );
 
   if (session.status !== PamSessionStatus.Active || !canTerminate) return null;
 
@@ -297,15 +303,21 @@ export const PamSessionsPage = () => {
                           <HighlightText text={session.actorName} highlight={search} />
                         </span>
                         <span className="text-xs text-muted">
-                          <HighlightText text={session.actorEmail} highlight={search} />
+                          {/* identityId is SET NULL on identity deletion; a machine session with a
+                              deleted identity has neither actor FK and an empty actorEmail */}
+                          {session.identityId || (!session.userId && !session.actorEmail) ? (
+                            "Machine Identity"
+                          ) : (
+                            <HighlightText text={session.actorEmail} highlight={search} />
+                          )}
                         </span>
                       </div>
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
                         {accountTypeDetails && (
-                          <img
-                            src={`/images/integrations/${accountTypeDetails.icon}`}
+                          <ProviderIcon
+                            icon={accountTypeDetails.icon}
                             alt={accountTypeDetails.name}
                             className="size-5 shrink-0 rounded-sm"
                           />
@@ -372,16 +384,16 @@ export const PamSessionsPage = () => {
         onTerminate={requestTerminate}
       />
 
-      <DeleteActionModal
+      <DeleteConfirmDialog
         isOpen={!!sessionToTerminate}
-        onChange={(open) => {
+        onOpenChange={(open) => {
           if (!open) setSessionToTerminate(null);
         }}
         title="Terminate Session"
-        subTitle="Are you sure you want to terminate this session? The user's connection will be immediately dropped."
-        deleteKey="terminate"
-        buttonText="Terminate"
-        onDeleteApproved={confirmTerminate}
+        description="Are you sure you want to terminate this session? The user's connection will be immediately dropped."
+        confirmKey="terminate"
+        confirmLabel="Terminate"
+        onConfirm={confirmTerminate}
       />
     </div>
   );

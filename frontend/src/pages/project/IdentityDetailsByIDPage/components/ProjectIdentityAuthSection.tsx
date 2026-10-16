@@ -1,7 +1,6 @@
 import { subject } from "@casl/ability";
 import { PlusIcon } from "lucide-react";
 
-import { UpgradePlanModal } from "@app/components/license/UpgradePlanModal";
 import { ProjectPermissionCan } from "@app/components/permissions";
 import {
   Button,
@@ -19,7 +18,7 @@ import {
 } from "@app/components/v3";
 import { ProjectPermissionIdentityActions, ProjectPermissionSub } from "@app/context";
 import { IdentityAuthMethod, TProjectIdentity } from "@app/hooks/api";
-import { usePopUp } from "@app/hooks/usePopUp";
+import { usePopUp, UsePopUpState } from "@app/hooks/usePopUp";
 import { IdentityAuthMethodModal } from "@app/pages/organization/AccessManagementPage/components/OrgIdentityTab/components/IdentitySection/IdentityAuthMethodModal";
 import { IdentityAuthMethodsTable } from "@app/views/IdentityAuthMethods";
 
@@ -36,6 +35,19 @@ export const ProjectIdentityAuthenticationSection = ({ identity, refetchIdentity
 
   const hasAuthMethods = Boolean(identity.authMethods.length);
 
+  // The auth-method forms invalidate the project identity query using the route's :projectId, which
+  // PAM's identity route doesn't carry (its project is internal), so this card can go stale there.
+  // Refetch whenever the sheet closes to keep the method list in sync on every product.
+  const handleAuthMethodPopUpToggle = (
+    popUpName: keyof UsePopUpState<["identityAuthMethod", "upgradePlan"]>,
+    state?: boolean
+  ) => {
+    handlePopUpToggle(popUpName, state);
+    if (popUpName === "identityAuthMethod" && !state) {
+      refetchIdentity();
+    }
+  };
+
   return (
     <>
       <Card>
@@ -48,7 +60,7 @@ export const ProjectIdentityAuthenticationSection = ({ identity, refetchIdentity
             ) && (
               <CardAction>
                 <ProjectPermissionCan
-                  I={ProjectPermissionIdentityActions.Edit}
+                  I={ProjectPermissionIdentityActions.EditAuth}
                   a={subject(ProjectPermissionSub.Identity, {
                     identityId: identity.id
                   })}
@@ -92,7 +104,7 @@ export const ProjectIdentityAuthenticationSection = ({ identity, refetchIdentity
               </EmptyHeader>
               <EmptyContent>
                 <ProjectPermissionCan
-                  I={ProjectPermissionIdentityActions.Edit}
+                  I={ProjectPermissionIdentityActions.EditAuth}
                   a={subject(ProjectPermissionSub.Identity, {
                     identityId: identity.id
                   })}
@@ -123,13 +135,7 @@ export const ProjectIdentityAuthenticationSection = ({ identity, refetchIdentity
       <IdentityAuthMethodModal
         popUp={popUp}
         handlePopUpOpen={handlePopUpOpen}
-        handlePopUpToggle={handlePopUpToggle}
-      />
-      <UpgradePlanModal
-        isOpen={popUp.upgradePlan.isOpen}
-        onOpenChange={(isOpen) => handlePopUpToggle("upgradePlan", isOpen)}
-        text={(popUp.upgradePlan?.data as { description: string })?.description}
-        isEnterpriseFeature={popUp.upgradePlan.data?.isEnterpriseFeature}
+        handlePopUpToggle={handleAuthMethodPopUpToggle}
       />
     </>
   );

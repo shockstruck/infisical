@@ -20,6 +20,7 @@ import { AwsSecretsManagerSyncOptionsSection } from "./AwsSecretsManagerSyncOpti
 import { FlyioSyncOptionsSection } from "./FlyioSyncOptionsSection";
 import { QoverySyncOptionsSection } from "./QoverySyncOptionsSection";
 import { RenderSyncOptionsSection } from "./RenderSyncOptionsSection";
+import { SpaceliftSyncOptionsSection } from "./SpaceliftSyncOptionsSection";
 import { TriggerDevSyncOptionsSection } from "./TriggerDevSyncOptionsSection";
 
 type Props = {
@@ -29,7 +30,7 @@ type Props = {
 export const SecretSyncOptionsSection = ({ secretSync }: Props) => {
   const {
     destination,
-    syncOptions: { initialSyncBehavior, disableSecretDeletion, keySchema }
+    syncOptions: { initialSyncBehavior, disableSecretDeletion, keySchema, includeAllSubFolders }
   } = secretSync;
 
   let AdditionalSyncOptionsComponent: ReactNode;
@@ -76,6 +77,7 @@ export const SecretSyncOptionsSection = ({ secretSync }: Props) => {
     case SecretSync.GitLab:
     case SecretSync.CloudflarePages:
     case SecretSync.CloudflareWorkers:
+    case SecretSync.CloudflareSecretsStore:
     case SecretSync.Zabbix:
     case SecretSync.Railway:
     case SecretSync.Supabase:
@@ -96,9 +98,15 @@ export const SecretSyncOptionsSection = ({ secretSync }: Props) => {
     case SecretSync.TravisCI:
     case SecretSync.Snowflake:
     case SecretSync.Rundeck:
+    case SecretSync.Portainer:
     case SecretSync.HasuraCloud:
     case SecretSync.Cloud66:
+    case SecretSync.Daytona:
+    case SecretSync.Keeper:
       AdditionalSyncOptionsComponent = null;
+      break;
+    case SecretSync.Spacelift:
+      AdditionalSyncOptionsComponent = <SpaceliftSyncOptionsSection secretSync={secretSync} />;
       break;
     default:
       throw new Error(`Unhandled Destination Review Fields: ${destination}`);
@@ -127,6 +135,14 @@ export const SecretSyncOptionsSection = ({ secretSync }: Props) => {
                 )}
               </Detail>
               {AdditionalSyncOptionsComponent}
+              <Detail>
+                <DetailLabel>Include All Subfolders</DetailLabel>
+                <DetailValue>
+                  <Badge variant={includeAllSubFolders ? "success" : "neutral"}>
+                    {includeAllSubFolders ? "Enabled" : "Disabled"}
+                  </Badge>
+                </DetailValue>
+              </Detail>
               <Detail>
                 <DetailLabel>Secret Deletion Protection</DetailLabel>
                 <DetailValue>

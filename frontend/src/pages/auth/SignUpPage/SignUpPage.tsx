@@ -1,24 +1,42 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Helmet } from "react-helmet";
 import { useTranslation } from "react-i18next";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
+import { LoaderCircle } from "lucide-react";
 
+import {
+  isSignupFlowExperimentEnabled,
+  SignupFlowVariant,
+  useSignupFlowVariant
+} from "@app/components/analytics/experiments/signupFlow/signupExperiment";
 import { AuthPageLayout } from "@app/components/auth/AuthPageLayout";
+import { AuthTermsNotice } from "@app/components/auth/AuthTermsNotice";
 import CodeInputStep from "@app/components/auth/CodeInputStep";
 import InitialSignupStep from "@app/components/auth/InitialSignupStep";
+import { OnboardingProgress } from "@app/components/auth/OnboardingPageLayout";
+import { OnboardingStepTransition } from "@app/components/auth/OnboardingStepTransition";
+import ProductSelectionStep from "@app/components/auth/ProductSelectionStep";
+import SignupCompleteStep from "@app/components/auth/SignupCompleteStep";
+import { getSignupProduct, SignupProductType } from "@app/components/auth/signupProducts";
 import TeamInviteStep from "@app/components/auth/TeamInviteStep";
 import UserInfoStep from "@app/components/auth/UserInfoStep";
 import { createNotification } from "@app/components/notifications";
+import { envConfig } from "@app/config/env";
 import { useServerConfig } from "@app/context";
 import { useSelectOrganization } from "@app/hooks/api/auth/queries";
 import { fetchOrganizations } from "@app/hooks/api/organization/queries";
+import { Project, ProjectType } from "@app/hooks/api/projects/types";
 import { useFetchServerStatus } from "@app/hooks/api/serverDetails";
+
+import { SignupPreviewLayout } from "./components/SignupPreviewLayout";
 
 enum SignupSection {
   Email = "email",
   VerifyCode = "verify-code",
   UserInfo = "user-info",
-  InviteTeam = "invite-team"
+  ProductSelect = "product-select",
+  InviteTeam = "invite-team",
+  Complete = "complete"
 }
 
 type PendingEmailVerification = {
@@ -29,18 +47,29 @@ type PendingEmailVerification = {
 export interface SignUpPageProps {
   invite?: {
     email: string;
+    organizationName?: string;
   };
 }
 
 export const SignUpPage = ({ invite }: SignUpPageProps) => {
   const isInvite = Boolean(invite);
+  const signupFlowVariant = useSignupFlowVariant(!isInvite && isSignupFlowExperimentEnabled());
   const [email, setEmail] = useState(invite?.email ?? "");
   const [pendingEmailVerification, setPendingEmailVerification] =
     useState<PendingEmailVerification | null>(null);
   const [section, setSection] = useState<SignupSection>(
     isInvite ? SignupSection.UserInfo : SignupSection.Email
   );
+  const [orgId, setOrgId] = useState("");
+  const [inviteEmails, setInviteEmails] = useState("");
+  const projectCache = useRef<Partial<Record<SignupProductType, Project>>>({});
+  // An empty selection means "just exploring".
+  const [selectedProducts, setSelectedProducts] = useState<SignupProductType[]>([]);
+  const [createdProjects, setCreatedProjects] = useState<
+    Partial<Record<SignupProductType, Project>>
+  >({});
   const navigate = useNavigate();
+  const { callback_port: callbackPort } = useSearch({ from: "/_restrict-login-signup" });
   const { data: serverDetails } = useFetchServerStatus();
   const { t } = useTranslation();
   const { config } = useServerConfig();
@@ -90,34 +119,62 @@ export const SignUpPage = ({ invite }: SignUpPageProps) => {
     );
   };
 
-  const handleUserInfoComplete = async () => {
+  const handleUserInfoComplete = async (newOrgId?: string) => {
     if (isInvite) {
       const userOrgs = await fetchOrganizations();
-      const orgId = userOrgs[0]?.id;
+      const inviteOrgId = userOrgs[0]?.id;
 
-      if (orgId) {
-        const { isMfaEnabled } = await selectOrganization({ organizationId: orgId });
+      if (inviteOrgId) {
+        const { isMfaEnabled } = await selectOrganization({ organizationId: inviteOrgId });
 
         if (isMfaEnabled) {
           navigate({
             to: "/login/select-organization",
-            search: { org_id: orgId }
+            search: { org_id: inviteOrgId }
           });
           return;
         }
 
         navigate({
           to: "/organizations/$orgId/projects",
-          params: { orgId }
+          params: { orgId: inviteOrgId }
         });
       } else {
         navigate({ to: "/login" });
       }
-    } else if (serverDetails?.emailConfigured) {
-      setSection(SignupSection.InviteTeam);
-    } else {
-      navigate({ to: "/" });
+      return;
     }
+
+    if (callbackPort) {
+      if (newOrgId) {
+        navigate({
+          to: "/login/select-organization",
+          search: { org_id: newOrgId, callback_port: callbackPort }
+        });
+      } else {
+        navigate({ to: "/organizations/onboarding", search: { callback_port: callbackPort } });
+      }
+      return;
+    }
+
+    if (newOrgId) {
+      setOrgId(newOrgId);
+    }
+    setSection(SignupSection.ProductSelect);
+  };
+
+  const handleProductSelectComplete = (
+    products: SignupProductType[],
+    projects: Partial<Record<SignupProductType, Project>>
+  ) => {
+    setSelectedProducts(products);
+    setCreatedProjects(projects);
+    // The invite step needs a working email service; skip straight to the summary without one.
+    setSection(serverDetails?.emailConfigured ? SignupSection.InviteTeam : SignupSection.Complete);
+  };
+
+  const handleInviteComplete = () => {
+    setSection(SignupSection.Complete);
   };
 
   const renderView = () => {
@@ -130,6 +187,7 @@ export const SignUpPage = ({ invite }: SignUpPageProps) => {
             incrementStep={handleEmailComplete}
             pendingVerificationEmail={pendingEmailVerification?.email}
             onResumeVerification={handleResumeEmailVerification}
+            callbackPort={callbackPort}
           />
         );
       case SignupSection.VerifyCode:
@@ -144,10 +202,48 @@ export const SignUpPage = ({ invite }: SignUpPageProps) => {
         );
       case SignupSection.UserInfo:
         return (
-          <UserInfoStep onComplete={handleUserInfoComplete} email={email} isInvite={isInvite} />
+          <UserInfoStep
+            onComplete={handleUserInfoComplete}
+            email={email}
+            isInvite={isInvite}
+            inviteOrganizationName={invite?.organizationName}
+          />
+        );
+      case SignupSection.ProductSelect:
+        return (
+          <ProductSelectionStep
+            onComplete={handleProductSelectComplete}
+            initialProducts={selectedProducts}
+            projectCache={projectCache}
+          />
         );
       case SignupSection.InviteTeam:
-        return <TeamInviteStep />;
+        return (
+          <TeamInviteStep
+            emails={inviteEmails}
+            onEmailsChange={setInviteEmails}
+            onBack={() => setSection(SignupSection.ProductSelect)}
+            productName={
+              selectedProducts.length === 1
+                ? getSignupProduct(selectedProducts[0])?.name
+                : undefined
+            }
+            projectIds={Object.values(createdProjects).flatMap((project) =>
+              project ? [project.id] : []
+            )}
+            grantPamAccess={selectedProducts.includes(ProjectType.PAM)}
+            grantAgentVaultAccess={selectedProducts.includes(ProjectType.AgentVault)}
+            onComplete={handleInviteComplete}
+          />
+        );
+      case SignupSection.Complete:
+        return (
+          <SignupCompleteStep
+            orgId={orgId || (localStorage.getItem("orgData.id") ?? "")}
+            products={selectedProducts}
+            projects={createdProjects}
+          />
+        );
       default:
         return null;
     }
@@ -155,29 +251,7 @@ export const SignUpPage = ({ invite }: SignUpPageProps) => {
 
   const renderBottomContent = () => {
     if (section === SignupSection.Email) {
-      return (
-        <p className="text-xs text-pretty text-label">
-          By signing up, you agree to our{" "}
-          <a
-            href="https://infisical.com/terms/cloud"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline underline-offset-2 transition-colors duration-200 hover:text-foreground hover:decoration-project/45"
-          >
-            Terms of Service
-          </a>{" "}
-          and{" "}
-          <a
-            href="https://infisical.com/privacy"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline underline-offset-2 transition-colors duration-200 hover:text-foreground hover:decoration-project/45"
-          >
-            Privacy Policy
-          </a>
-          .
-        </p>
-      );
+      return <AuthTermsNotice showCaptchaNotice={Boolean(envConfig.CAPTCHA_SITE_KEY)} />;
     }
 
     if (section === SignupSection.VerifyCode) {
@@ -186,6 +260,7 @@ export const SignUpPage = ({ invite }: SignUpPageProps) => {
           <span className="text-label">Already have an account?</span>
           <Link
             to="/login"
+            search={{ callback_port: callbackPort }}
             className="text-foreground/95 underline decoration-project/60 underline-offset-2 transition-colors duration-200 hover:decoration-project"
           >
             Log in
@@ -197,8 +272,24 @@ export const SignUpPage = ({ invite }: SignUpPageProps) => {
     return undefined;
   };
 
-  return (
-    <AuthPageLayout showFooter={false} bottomContent={renderBottomContent()}>
+  const isWorkspaceSetup =
+    section === SignupSection.ProductSelect ||
+    section === SignupSection.InviteTeam ||
+    section === SignupSection.Complete;
+
+  const postAuthSteps = serverDetails?.emailConfigured
+    ? [SignupSection.ProductSelect, SignupSection.InviteTeam, SignupSection.Complete]
+    : [SignupSection.ProductSelect, SignupSection.Complete];
+  const stepIndicator =
+    !isInvite && isWorkspaceSetup ? (
+      <OnboardingProgress
+        currentStep={postAuthSteps.indexOf(section) + 1}
+        totalSteps={postAuthSteps.length}
+      />
+    ) : undefined;
+
+  const pageContent = (
+    <>
       <Helmet>
         <title>{t("common.head-title", { title: t("signup.title") })}</title>
         <link rel="icon" href="/infisical.ico" />
@@ -206,13 +297,53 @@ export const SignUpPage = ({ invite }: SignUpPageProps) => {
         <meta property="og:title" content={t("signup.og-title") as string} />
         <meta name="og:description" content={t("signup.og-description") as string} />
       </Helmet>
-      {section === SignupSection.VerifyCode ? (
-        <div className="w-full">{renderView()}</div>
-      ) : (
-        <form className="w-full" onSubmit={(e) => e.preventDefault()}>
-          {renderView()}
-        </form>
-      )}
+      <OnboardingStepTransition step={section}>
+        {section === SignupSection.VerifyCode ||
+        section === SignupSection.UserInfo ||
+        section === SignupSection.ProductSelect ||
+        section === SignupSection.Complete ? (
+          <div className="w-full">{renderView()}</div>
+        ) : (
+          <form className="w-full" onSubmit={(e) => e.preventDefault()}>
+            {renderView()}
+          </form>
+        )}
+      </OnboardingStepTransition>
+    </>
+  );
+
+  if (!signupFlowVariant) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-page" role="status">
+        <div className="flex flex-col items-center gap-3 text-sm text-label">
+          <LoaderCircle className="size-5 animate-spin text-project motion-reduce:animate-none" />
+          <span>Preparing sign up</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (
+    !isInvite &&
+    section === SignupSection.Email &&
+    signupFlowVariant === SignupFlowVariant.DashboardPreview
+  ) {
+    return (
+      <SignupPreviewLayout bottomContent={renderBottomContent()} headerAction={stepIndicator}>
+        {pageContent}
+      </SignupPreviewLayout>
+    );
+  }
+
+  return (
+    <AuthPageLayout
+      showFooter={false}
+      bottomContent={renderBottomContent()}
+      headerAction={stepIndicator}
+      variant={isWorkspaceSetup ? "focused" : "split"}
+      contentClassName={isWorkspaceSetup ? "max-w-3xl" : undefined}
+    >
+      {pageContent}
     </AuthPageLayout>
   );
 };

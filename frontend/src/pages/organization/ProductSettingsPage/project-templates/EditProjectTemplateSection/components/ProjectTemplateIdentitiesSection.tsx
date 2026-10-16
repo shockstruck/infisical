@@ -18,6 +18,7 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
   Empty,
@@ -349,7 +350,7 @@ export const ProjectTemplateIdentitiesSection = ({ projectTemplate }: Props) => 
               </span>
             )}
             {allIdentitiesForTable.length > 0 ? (
-              <Table className="table-fixed">
+              <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Identity</TableHead>
@@ -363,7 +364,7 @@ export const ProjectTemplateIdentitiesSection = ({ projectTemplate }: Props) => 
                     <TableRow key={item.id}>
                       <TableCell className="py-2">
                         <p className="truncate">
-                          <span className="truncate text-sm font-medium text-mineshaft-100">
+                          <span className="truncate text-sm font-medium text-foreground">
                             {item.name}
                           </span>
                         </p>
@@ -469,7 +470,7 @@ export const ProjectTemplateIdentitiesSection = ({ projectTemplate }: Props) => 
       </form>
 
       <Dialog open={isAddIdentityModalOpen} onOpenChange={setIsAddIdentityModalOpen}>
-        <DialogContent className="max-w-xl overflow-visible">
+        <DialogContent className="max-w-xl">
           <DialogHeader>
             <DialogTitle>Add Machine Identity to Template</DialogTitle>
             <DialogDescription>
@@ -491,16 +492,16 @@ export const ProjectTemplateIdentitiesSection = ({ projectTemplate }: Props) => 
             </Tabs>
             <Tooltip>
               <TooltipTrigger asChild>
-                <InfoIcon size={16} className="text-mineshaft-400" />
+                <InfoIcon size={16} className="text-muted" />
               </TooltipTrigger>
               <TooltipContent className="max-w-sm" side="right" align="start">
-                <p className="mb-2 text-mineshaft-300">
+                <p className="mb-2 text-label">
                   You can add machine identities to your template in one of two ways:
                 </p>
                 <ul className="ml-3.5 flex list-disc flex-col gap-y-4">
-                  <li className="text-mineshaft-200">
-                    <strong className="font-medium text-mineshaft-100">Create New</strong> - Define
-                    a new machine identity that will be created when a project is made from this
+                  <li className="text-foreground-secondary">
+                    <strong className="font-medium text-foreground">Create New</strong> - Define a
+                    new machine identity that will be created when a project is made from this
                     template.
                     <p className="mt-2">
                       This method is recommended for autonomous teams that need to manage machine
@@ -508,7 +509,7 @@ export const ProjectTemplateIdentitiesSection = ({ projectTemplate }: Props) => 
                     </p>
                   </li>
                   <li>
-                    <strong className="font-medium text-mineshaft-100">Assign Existing</strong> -
+                    <strong className="font-medium text-foreground">Assign Existing</strong> -
                     Assign an existing machine identity from your organization.
                     <p className="mt-2">
                       This method is recommended for organizations that need to maintain centralized
@@ -527,7 +528,13 @@ export const ProjectTemplateIdentitiesSection = ({ projectTemplate }: Props) => 
                 render={({ field, fieldState: { error } }) => (
                   <Field className="mb-4">
                     <FieldLabel>Name</FieldLabel>
-                    <Input {...field} autoFocus placeholder="Machine Identity 1" />
+                    <Input
+                      {...field}
+                      autoFocus
+                      placeholder="Machine Identity 1"
+                      autoComplete="off"
+                      name="project-template-identity-name"
+                    />
                     {error?.message && <FieldError>{error.message}</FieldError>}
                   </Field>
                 )}
@@ -553,7 +560,7 @@ export const ProjectTemplateIdentitiesSection = ({ projectTemplate }: Props) => 
                   </Field>
                 )}
               />
-              <div className="mt-4 flex items-center justify-end gap-4">
+              <DialogFooter className="mt-4">
                 <Button type="button" variant="ghost" onClick={handleCloseAddIdentityModal}>
                   Cancel
                 </Button>
@@ -565,7 +572,7 @@ export const ProjectTemplateIdentitiesSection = ({ projectTemplate }: Props) => 
                 >
                   Add to Template
                 </Button>
-              </div>
+              </DialogFooter>
             </form>
           )}
           {addMachineIdentityType === AddIdentityType.AssignExisting && (
@@ -613,7 +620,7 @@ export const ProjectTemplateIdentitiesSection = ({ projectTemplate }: Props) => 
                   </Field>
                 )}
               />
-              <div className="mt-4 flex items-center justify-end gap-4">
+              <DialogFooter className="mt-4">
                 <Button type="button" variant="ghost" onClick={handleCloseAddIdentityModal}>
                   Cancel
                 </Button>
@@ -625,7 +632,7 @@ export const ProjectTemplateIdentitiesSection = ({ projectTemplate }: Props) => 
                 >
                   Assign to Template
                 </Button>
-              </div>
+              </DialogFooter>
             </form>
           )}
         </DialogContent>

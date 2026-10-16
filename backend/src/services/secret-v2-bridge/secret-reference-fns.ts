@@ -1,8 +1,9 @@
 import path from "node:path";
 
+import { Knex } from "knex";
 import RE2 from "re2";
 
-import { ForbiddenRequestError } from "@app/lib/errors";
+import { ClientClosedRequestError, ForbiddenRequestError, throwIfClientDisconnected } from "@app/lib/errors";
 import { logger } from "@app/lib/logger";
 
 import { TKmsServiceFactory } from "../kms/kms-service";
@@ -10,12 +11,14 @@ import { KmsDataKey } from "../kms/kms-types";
 import { TOrgDALFactory } from "../org/org-dal";
 import { TProjectDALFactory } from "../project/project-dal";
 import { TProjectFolderGrantDALFactory } from "../project-folder-grant/project-folder-grant-dal";
-import { isCrossProjectEnabled } from "../project-folder-grant/project-folder-grant-fns";
 import { TSecretFolderDALFactory } from "../secret-folder/secret-folder-dal";
 import { TSecretV2BridgeDALFactory } from "./secret-v2-bridge-dal";
 
-// Supports standard refs like ${ENV.path.KEY} and cross-project refs like ${@project-slug.ENV.path.KEY}
-const INTERPOLATION_PATTERN_STRING = String.raw`\${([a-zA-Z0-9-_.@]+)}`;
+// Supports standard refs like ${ENV.path.KEY} and cross-project refs like ${@project-slug.ENV.path.KEY}.
+// Secret names may contain spaces, but environment slugs and folder names cannot, so spaces are only
+// accepted inside the final segment. Leading and trailing spaces are not, so `${ KEY }` stays literal as it
+// always has rather than starting to resolve once trimmed.
+const INTERPOLATION_PATTERN_STRING = String.raw`\${([a-zA-Z0-9-_.@]+(?: +[a-zA-Z0-9-_@]+)*)}`;
 const INTERPOLATION_TEST_REGEX = new RE2(INTERPOLATION_PATTERN_STRING);
 
 export const containsSecretReference = (value: string) => INTERPOLATION_TEST_REGEX.test(value);
@@ -109,6 +112,8 @@ type TInterpolateSecretArg = {
   // same-project relative references; cross-project reads must stay raw so source
   // project imports are not resolved through the target project context.
   crossProjectSecretDAL?: Pick<TSecretV2BridgeDALFactory, "findByFolderId">;
+  abortSignal?: AbortSignal;
+  tx?: Knex;
 };
 
 const MAX_SECRET_REFERENCE_DEPTH = 10;
@@ -124,7 +129,9 @@ export const expandSecretReferencesFactory = ({
   projectFolderGrantDAL,
   projectDAL,
   kmsService,
-  crossProjectSecretDAL
+  crossProjectSecretDAL,
+  abortSignal,
+  tx
 }: TInterpolateSecretArg) => {
   const secretCache: Record<string, Record<string, { value: string; tags: string[]; exists: boolean }>> = {};
   let crossProjectAllowedCache: boolean | undefined;
@@ -132,7 +139,8 @@ export const expandSecretReferencesFactory = ({
   const checkCrossProjectAllowed = async () => {
     if (!hasCrossProjectConfig || !actorOrgId || !orgDAL) return false;
     if (crossProjectAllowedCache !== undefined) return crossProjectAllowedCache;
-    crossProjectAllowedCache = await isCrossProjectEnabled(actorOrgId, orgDAL);
+    const org = await orgDAL.findOrgById(actorOrgId);
+    crossProjectAllowedCache = org?.allowCrossProjectSecretSharing ?? false;
     return crossProjectAllowedCache;
   };
   const slugToProjectId = new Map<string, string | null>();
@@ -159,25 +167,17 @@ export const expandSecretReferencesFactory = ({
   const getCacheUniqueKey = (environment: string, secretPath: string, srcProjectId?: string) =>
     srcProjectId ? `${srcProjectId}:${environment}-${secretPath}` : `${environment}-${secretPath}`;
 
-  const fetchSecret = async (
-    environment: string,
-    secretPath: string,
-    secretKey: string
-  ): Promise<{ value: string; tags: string[]; exists: boolean }> => {
-    const cacheKey = getCacheUniqueKey(environment, secretPath);
+  const pendingFolderLoads = new Map<string, Promise<void>>();
 
-    if (secretCache?.[cacheKey]) {
-      const cachedSecret = secretCache[cacheKey][secretKey];
-      if (cachedSecret) return { ...cachedSecret };
-      return { value: "", tags: [], exists: false };
-    }
-
+  const loadFolderSecrets = async (environment: string, secretPath: string, cacheKey: string) => {
     try {
-      const folder = await folderDAL.findBySecretPath(projectId, environment, secretPath);
-      if (!folder) return { value: "", tags: [], exists: false };
+      const folder = await folderDAL.findBySecretPath(projectId, environment, secretPath, tx);
+      if (!folder) return;
+      throwIfClientDisconnected(abortSignal);
       // When userId is provided, findByFolderId returns both shared and personal secrets.
       // Personal overrides will take precedence over shared secrets in the reduce below.
-      const secrets = await secretDAL.findByFolderId({ folderId: folder.id, userId });
+      const secrets = await secretDAL.findByFolderId({ folderId: folder.id, userId, tx });
+      throwIfClientDisconnected(abortSignal);
 
       const decryptedSecret = secrets.reduce<Record<string, { value: string; tags: string[]; exists: boolean }>>(
         (prev, secret) => {
@@ -200,14 +200,34 @@ export const expandSecretReferencesFactory = ({
       );
 
       secretCache[cacheKey] = decryptedSecret;
-
-      const fetchedSecret = secretCache[cacheKey][secretKey];
-      if (fetchedSecret) return { ...fetchedSecret };
-      return { value: "", tags: [], exists: false };
     } catch (error) {
+      // Rethrown so every expansion waiting on this shared load stops, rather than caching the folder as empty.
+      if (error instanceof ClientClosedRequestError) throw error;
       secretCache[cacheKey] = {};
-      return { value: "", tags: [], exists: false };
     }
+  };
+
+  const fetchSecret = async (
+    environment: string,
+    secretPath: string,
+    secretKey: string
+  ): Promise<{ value: string; tags: string[]; exists: boolean }> => {
+    const cacheKey = getCacheUniqueKey(environment, secretPath);
+
+    if (!secretCache[cacheKey]) {
+      let pending = pendingFolderLoads.get(cacheKey);
+      if (!pending) {
+        // Concurrent reference expansion must share the folder read before its result is cached.
+        pending = loadFolderSecrets(environment, secretPath, cacheKey).finally(() => {
+          pendingFolderLoads.delete(cacheKey);
+        });
+        pendingFolderLoads.set(cacheKey, pending);
+      }
+      await pending;
+    }
+
+    const secret = secretCache[cacheKey]?.[secretKey];
+    return secret ? { ...secret } : { value: "", tags: [], exists: false };
   };
 
   const recursivelyExpandSecret = async (dto: {
@@ -220,6 +240,8 @@ export const expandSecretReferencesFactory = ({
     const stackTrace = { ...dto, key: "root", children: [] } as TSecretReferenceTraceNode;
 
     if (!dto.value) return { expandedValue: "", stackTrace };
+
+    throwIfClientDisconnected(abortSignal);
 
     // Track visited secrets to prevent circular references
     const createSecretId = (env: string, secretPath: string, key: string) => `${env}:${secretPath}:${key}`;
@@ -270,6 +292,8 @@ export const expandSecretReferencesFactory = ({
         }
 
         for (const interpolationSyntax of refs) {
+          throwIfClientDisconnected(abortSignal);
+
           const interpolationKey = interpolationSyntax.slice(2, interpolationSyntax.length - 1);
           const entities = interpolationKey.trim().split(".");
 
@@ -334,7 +358,8 @@ export const expandSecretReferencesFactory = ({
             } else {
               try {
                 // eslint-disable-next-line no-await-in-loop
-                const sourceFolder = await folderDAL.findBySecretPath(sourceProjectId, crossProjEnv, crossProjPath);
+                const sourceFolder = await folderDAL.findBySecretPath(sourceProjectId, crossProjEnv, crossProjPath, tx);
+                throwIfClientDisconnected(abortSignal);
                 if (!sourceFolder) {
                   secretCache[crossProjCacheKey] = {};
                   crossProjSecretData = { value: "", tags: [], exists: false };
@@ -363,8 +388,10 @@ export const expandSecretReferencesFactory = ({
                     // with import-aware behavior.
                     // eslint-disable-next-line no-await-in-loop
                     const sourceSecrets = await (crossProjectSecretDAL || secretDAL).findByFolderId({
-                      folderId: sourceFolder.id
+                      folderId: sourceFolder.id,
+                      tx
                     });
+                    throwIfClientDisconnected(abortSignal);
 
                     const crossProjDecrypted = sourceSecrets.reduce<
                       Record<string, { value: string; tags: string[]; exists: boolean }>
@@ -386,6 +413,7 @@ export const expandSecretReferencesFactory = ({
                   }
                 }
               } catch (error) {
+                if (error instanceof ClientClosedRequestError) throw error;
                 logger.error(
                   { err: error, crossProjSlug, crossProjEnv, crossProjPath, crossProjKey },
                   `Failed to expand cross-project reference [slug=${crossProjSlug}] [env=${crossProjEnv}] [path=${crossProjPath}] [key=${crossProjKey}]`

@@ -15,12 +15,12 @@ export const registerPkiInstallationRouter = async (server: FastifyZodProvider) 
     config: {
       rateLimit: readLimit
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     schema: {
       hide: false,
       tags: [ApiDocsTags.PkiInstallations],
       operationId: "listPkiInstallations",
-      description: "List PKI certificate installations for a project",
+      description: "List PKI certificate installations",
       querystring: z.object({
         projectId: z.string().optional().describe(openApiHidden()),
         discoveryId: z.string().uuid().optional().describe("Filter by discovery configuration ID"),
@@ -78,7 +78,7 @@ export const registerPkiInstallationRouter = async (server: FastifyZodProvider) 
     config: {
       rateLimit: readLimit
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     schema: {
       hide: false,
       tags: [ApiDocsTags.PkiInstallations],
@@ -145,7 +145,7 @@ export const registerPkiInstallationRouter = async (server: FastifyZodProvider) 
     config: {
       rateLimit: writeLimit
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     schema: {
       hide: false,
       tags: [ApiDocsTags.PkiInstallations],
@@ -193,7 +193,7 @@ export const registerPkiInstallationRouter = async (server: FastifyZodProvider) 
     config: {
       rateLimit: writeLimit
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     schema: {
       hide: false,
       tags: [ApiDocsTags.PkiInstallations],

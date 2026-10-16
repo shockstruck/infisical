@@ -2,12 +2,15 @@ import { OrderByDirection } from "../../generic/types";
 import {
   PamAccessRequestDecision,
   PamAccessStatus,
+  PamAccessType,
   PamAccountOrderBy,
   PamAccountType,
   PamAccountView,
   PamApproverType,
   PamDiscoverySchedule,
   PamDiscoveryType,
+  PamFolderCallerAccess,
+  PamHeartbeatStatus,
   PamNotificationEvent,
   PamPolicyType,
   PamResourcePermissionActions,
@@ -74,6 +77,18 @@ export type TPamDiscoveredAccount = {
   dependencies: TPamDependency[];
 };
 
+// an imported account the source's latest scan no longer found. Informational only: nothing about the
+// managed account is blocked, it's listed so an admin can decide whether to delete it.
+export type TPamStaleAccount = {
+  id: string;
+  accountId: string;
+  name: string;
+  folderId: string | null;
+  folderName: string | null;
+  accountType: PamAccountType;
+  lastDiscoveredAt: string | null;
+};
+
 export type TPamAccountDependency = TPamDependency & {
   data: Record<string, unknown> | null;
   rotationStatus: PamRotationStatus | null;
@@ -131,15 +146,19 @@ export enum PamFieldWidget {
   Password = "password"
 }
 
+export type TPamFieldCondition = { field: string; equals: string | boolean };
+
 export type TPamFieldDescriptor = {
   key: string;
   label: string;
   widget: PamFieldWidget;
   required: boolean;
   secret: boolean;
-  options?: { label: string; value: string }[];
+  optional?: boolean;
+  options?: { label: string; value: string; docsUrl?: string }[];
   defaultValue?: string | number | boolean;
-  showWhen?: { field: string; equals: string | boolean };
+  showWhen?: TPamFieldCondition;
+  forceWhen?: { when: TPamFieldCondition; value: string | number | boolean; reason: string }[];
   tooltip?: string;
 };
 
@@ -156,6 +175,7 @@ export type TPamAccountTypeMetadata = {
   supportsWebAccess: boolean;
   requiresGateway: boolean;
   supportsDependencies: boolean;
+  connectionStringSchemes?: string[];
   connectionFields: TPamFieldDescriptor[];
   credentialFields: TPamFieldDescriptor[];
   applicablePolicies: TPamPolicyDescriptor[];
@@ -203,8 +223,23 @@ export type TPamAccount = {
   credentials: Record<string, unknown>;
   isAccessible: boolean;
   accessibilityIssues: PamAccountAccessibilityIssue[];
+  // the latest discovery scan didn't find it. Informational only, nothing about the account is blocked.
+  isStale: boolean;
+  heartbeatStatus?: PamHeartbeatStatus | null;
+  webAccessUnavailableReason?: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type TPamAccountCredentials = {
+  accountType: PamAccountType;
+  credentials: Record<string, unknown>;
+};
+
+export type TGetPamAccountCredentialsDTO = {
+  accountId: string;
+  reason?: string;
+  mfaSessionId?: string;
 };
 
 export type TPamFolder = {
@@ -243,6 +278,8 @@ export type TSessionEvent = {
   eventType: "input" | "output" | "resize" | "error";
   channelType?: SessionChannelType;
   data: string;
+  // set by gateways that render the terminal before recording. absent on older recordings, whose data is raw terminal bytes
+  rendered?: boolean;
   elapsedTime: number;
 };
 
@@ -285,6 +322,7 @@ export type TPamSession = {
   selectedHost?: string | null;
   accessMethod?: string | null;
   userId?: string | null;
+  identityId?: string | null;
   actorName: string;
   actorEmail: string;
   actorIp: string;
@@ -316,7 +354,14 @@ export type TAccessiblePamAccount = {
   requiresApproval?: boolean;
   requireReason?: boolean;
   accessStatus?: PamAccessStatus;
+  grantId?: string | null;
   grantExpiresAt?: string | null;
+  // Required, unlike the fields above: every endpoint returning this shape sets them, and a mapping
+  // site that quietly omitted them is what stopped the break-glass action from ever rendering.
+  pendingRequestId: string | null;
+  canBreakGlass: boolean;
+  credentialAccessStatus?: PamAccessStatus;
+  credentialPendingRequestId?: string | null;
   disabledReason?: string | null;
   createdAt: string;
   updatedAt: string;
@@ -355,7 +400,11 @@ export type TDeletePamFolderDTO = {
   folderId: string;
 };
 
-export type TPamFolderWithCount = TPamFolder & { accountCount: number };
+export type TPamFolderWithCount = TPamFolder & {
+  accountCount: number;
+  // Only returned to org admins, who see every folder and can join one as admin.
+  callerAccess?: PamFolderCallerAccess;
+};
 
 export type TCreatePamAccountDTO = {
   accountType: PamAccountType;
@@ -434,6 +483,13 @@ export type TPamMember = {
   isActive: boolean;
   expiresAt?: string | null;
   createdAt: string;
+};
+
+// Identity members come back enriched with the identity's name and scope
+export type TPamIdentityMember = TPamMember & {
+  name: string;
+  identityProjectId?: string | null;
+  identityOrgId?: string | null;
 };
 
 export type TPamResourceRole = {
@@ -607,6 +663,17 @@ export type TPamPasswordRequirements = {
   allowedSymbols?: string;
 };
 
+export type TPamAccountHeartbeat = {
+  enabled: boolean;
+  intervalSeconds: number | null;
+  status: PamHeartbeatStatus | null;
+  lastCheckedAt: string | null;
+  lastHealthyAt: string | null;
+  nextCheckAt: string | null;
+  templateName: string;
+  lastMessage: string | null;
+};
+
 export type TPamAccountRotation = {
   enabled: boolean;
   intervalSeconds: number | null;
@@ -642,6 +709,8 @@ export type TPamAccessRequest = {
   projectId: string;
   policyId: string;
   requesterId: string | null;
+  // Set instead of requesterId when a machine identity raised the request
+  machineIdentityId?: string | null;
   requesterName: string;
   requesterEmail: string;
   type: string;
@@ -655,6 +724,7 @@ export type TPamAccessRequest = {
       folderId: string;
       reason?: string;
       duration: string;
+      accessType?: PamAccessType;
     };
   } | null;
   expiresAt: string | null;
@@ -667,8 +737,12 @@ export type TPamAccessRequest = {
   accountType?: PamAccountType;
   folderName?: string;
   host?: string;
+  accessType?: PamAccessType;
+  grantId?: string | null;
   grantExpiresAt?: string | null;
   grantStatus?: string | null;
+  isBreakGlass?: boolean;
+  bypassReason?: string | null;
 };
 
 export type TPamNotificationConfig = {
@@ -686,6 +760,7 @@ export type TPamApprovalConfig = {
     integration: string;
     integrationSlug: string;
   })[];
+  breakGlassUsers: { type: PamApproverType; id: string }[];
 };
 
 export type TPamAccessGrant = {
@@ -703,9 +778,11 @@ export type TPamAccessGrant = {
 };
 
 export type TCreatePamAccessRequestDTO = {
+  breakGlass?: boolean;
   accountId: string;
   reason?: string;
   duration: string;
+  accessType?: PamAccessType;
 };
 
 export type TReviewPamAccessRequestDTO = {
@@ -715,7 +792,12 @@ export type TReviewPamAccessRequestDTO = {
 };
 
 export type TRevokePamAccessRequestDTO = {
+  grantId: string;
+};
+
+export type TBreakGlassPamAccessRequestDTO = {
   requestId: string;
+  bypassReason: string;
 };
 
 export type TSetPamApprovalConfigDTO = {
@@ -724,4 +806,5 @@ export type TSetPamApprovalConfigDTO = {
     approvers: { type: PamApproverType; id: string }[];
   }[];
   notificationConfigs?: TPamNotificationConfig[];
+  breakGlassUsers?: { type: PamApproverType; id: string }[];
 };

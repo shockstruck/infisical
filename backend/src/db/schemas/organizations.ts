@@ -32,7 +32,6 @@ export const OrganizationsSchema = z.object({
   secretsProductEnabled: z.boolean().default(true).nullable().optional(),
   pkiProductEnabled: z.boolean().default(true).nullable().optional(),
   kmsProductEnabled: z.boolean().default(true).nullable().optional(),
-  sshProductEnabled: z.boolean().default(true).nullable().optional(),
   scannerProductEnabled: z.boolean().default(true).nullable().optional(),
   shareSecretsProductEnabled: z.boolean().default(true).nullable().optional(),
   maxSharedSecretLifetime: z.number().default(2592000).nullable().optional(),
@@ -44,7 +43,10 @@ export const OrganizationsSchema = z.object({
   blockDuplicateSecretSyncDestinations: z.boolean().default(false),
   secretShareBrandConfig: z.unknown().nullable().optional(),
   defaultCertManagerProjectId: z.string().nullable().optional(),
-  allowCrossProjectSecretSharing: z.boolean().default(false)
+  allowCrossProjectSecretSharing: z.boolean().default(false),
+  createdByUserId: z.string().uuid().nullable().optional(),
+  orgWideSecretValueTrackingEnabled: z.boolean().default(false),
+  requireGatewayPools: z.boolean().default(false)
 });
 
 export type TOrganizations = z.infer<typeof OrganizationsSchema>;

@@ -1,6 +1,4 @@
 import { AppConnection } from "../appConnections/enums";
-import { SshCaStatus } from "../sshCa";
-import { SshCertTemplateStatus } from "../sshCertificateTemplates";
 import { AcmeDnsProvider, CaCapability, CaStatus, CaType, InternalCaType } from "./enums";
 
 export const caTypeToNameMap: { [K in InternalCaType]: string } = {
@@ -18,21 +16,28 @@ export const ACME_DNS_PROVIDER_NAME_MAP: Record<AcmeDnsProvider, string> = {
   [AcmeDnsProvider.ROUTE53]: "Route53",
   [AcmeDnsProvider.Cloudflare]: "Cloudflare",
   [AcmeDnsProvider.DNSMadeEasy]: "DNS Made Easy",
-  [AcmeDnsProvider.AzureDNS]: "Azure DNS"
+  [AcmeDnsProvider.AzureDNS]: "Azure DNS",
+  [AcmeDnsProvider.PowerDns]: "PowerDNS",
+  [AcmeDnsProvider.GcpCloudDns]: "Google Cloud DNS",
+  [AcmeDnsProvider.UltraDNS]: "UltraDNS"
 };
 
 export const ACME_DNS_PROVIDER_APP_CONNECTION_MAP: Record<AcmeDnsProvider, AppConnection> = {
   [AcmeDnsProvider.ROUTE53]: AppConnection.AWS,
   [AcmeDnsProvider.Cloudflare]: AppConnection.Cloudflare,
   [AcmeDnsProvider.DNSMadeEasy]: AppConnection.DNSMadeEasy,
-  [AcmeDnsProvider.AzureDNS]: AppConnection.AzureDNS
+  [AcmeDnsProvider.AzureDNS]: AppConnection.AzureDNS,
+  [AcmeDnsProvider.PowerDns]: AppConnection.PowerDns,
+  [AcmeDnsProvider.GcpCloudDns]: AppConnection.GCP,
+  [AcmeDnsProvider.UltraDNS]: AppConnection.UltraDNS
 };
 
 export const CA_TYPE_CAPABILITIES_MAP: Record<CaType, CaCapability[]> = {
   [CaType.INTERNAL]: [
     CaCapability.ISSUE_CERTIFICATES,
     CaCapability.REVOKE_CERTIFICATES,
-    CaCapability.RENEW_CERTIFICATES
+    CaCapability.RENEW_CERTIFICATES,
+    CaCapability.CUSTOM_EXTENSIONS
   ],
   [CaType.ACME]: [
     CaCapability.ISSUE_CERTIFICATES,
@@ -43,12 +48,14 @@ export const CA_TYPE_CAPABILITIES_MAP: Record<CaType, CaCapability[]> = {
   [CaType.ADCS]: [
     CaCapability.ISSUE_CERTIFICATES,
     CaCapability.REVOKE_CERTIFICATES,
-    CaCapability.RENEW_CERTIFICATES
+    CaCapability.RENEW_CERTIFICATES,
+    CaCapability.CUSTOM_EXTENSIONS
   ],
   [CaType.AWS_PCA]: [
     CaCapability.ISSUE_CERTIFICATES,
     CaCapability.REVOKE_CERTIFICATES,
-    CaCapability.RENEW_CERTIFICATES
+    CaCapability.RENEW_CERTIFICATES,
+    CaCapability.CUSTOM_EXTENSIONS
   ],
   [CaType.DIGICERT]: [
     CaCapability.ISSUE_CERTIFICATES,
@@ -87,7 +94,7 @@ export const caSupportsCapability = (caType: CaType, capability: CaCapability): 
   return capabilities.includes(capability);
 };
 
-export const getCaStatusBadgeVariant = (status: CaStatus | SshCaStatus | SshCertTemplateStatus) => {
+export const getCaStatusBadgeVariant = (status: CaStatus) => {
   switch (status) {
     case CaStatus.ACTIVE:
       return "success";

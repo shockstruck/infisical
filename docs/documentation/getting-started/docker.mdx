@@ -1,5 +1,6 @@
 ---
 title: "Docker"
+description: "Add the Infisical CLI to a Dockerfile so your container receives secrets as environment variables."
 ---
 
 The [Infisical CLI](/cli/overview) can be added to Dockerfiles to fetch secrets from Infisical and make them available as environment variables within containers at runtime.
@@ -13,7 +14,7 @@ Prerequisites:
 <Tabs>
     <Tab title="Docker">
     
-    ## Dockerfile Modification
+    ## Dockerfile modification
 
     Follow the instructions for your specific Linux distribution to add the Infisical CLI to your Dockerfile.
 
@@ -45,7 +46,7 @@ Prerequisites:
     Next, modify the start command of your Dockerfile:
 
     ```dockerfile
-    CMD ["infisical", "run", "--", "[your service start command]"]
+    CMD ["infisical", "sm", "run", "--", "[your service start command]"]
     ```
 
     ## Launch
@@ -79,13 +80,13 @@ Prerequisites:
     WORKDIR /app
 
     # Modify the start command of your Dockerfile
-    CMD ["infisical", "run", "--", "npm run start"]
+    CMD ["infisical", "sm", "run", "--", "npm run start"]
     ```
     
     </Tab>
     <Tab title="Docker Compose">
     
-    ## Dockerfile Modifications
+    ## Dockerfile modifications
 
     Follow the instructions for your specific Linux distributions to add the Infisical CLI to your Dockerfiles.
 
@@ -117,7 +118,7 @@ Prerequisites:
     Next, modify the start commands of your Dockerfiles:
 
     ```dockerfile
-    CMD ["infisical", "run", "--", "[your service start command]"]
+    CMD ["infisical", "sm", "run", "--", "[your service start command]"]
     ```
     
     ## Example Dockerfile
@@ -141,10 +142,10 @@ Prerequisites:
     WORKDIR /app
 
     # Modify the start command of your Dockerfile
-    CMD ["infisical", "run", "--", "[your service start command]"]
+    CMD ["infisical", "sm", "run", "--", "[your service start command]"]
     ```
     
-    ## Docker Compose File Modification
+    ## Docker Compose file modification
     
     For each service you want to inject secrets into, set an environment variable called `INFISICAL_TOKEN` equal to a unique identifier variable. For example:
     
@@ -179,7 +180,4 @@ Prerequisites:
     </Tab>
 </Tabs>
 
-See also:
-
-- [Documentation for Docker](/integrations/platforms/docker)
-- [Documentation for Docker Compose](/integrations/platforms/docker-compose)
+See the [Docker secrets delivery guide](/integrations/platforms/docker) for the recommended startup, Docker Run, and Docker Compose workflows.

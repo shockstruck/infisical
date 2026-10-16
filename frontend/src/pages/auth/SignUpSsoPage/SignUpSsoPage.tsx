@@ -4,10 +4,12 @@ import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { jwtDecode } from "jwt-decode";
 
+import { captureSignupCompleted } from "@app/components/analytics/experiments/signupFlow/signupExperiment";
 import { AuthPageLayout } from "@app/components/auth/AuthPageLayout";
 import { AuthPagePanel } from "@app/components/auth/AuthPagePanel";
 import { createNotification } from "@app/components/notifications";
 import SecurityClient from "@app/components/utilities/SecurityClient";
+import Telemetry from "@app/components/utilities/telemetry/Telemetry";
 import {
   Button,
   CardContent,
@@ -21,6 +23,7 @@ import { isInfisicalCloud } from "@app/helpers/platform";
 import { getHubSpotUtk } from "@app/helpers/utmTracking";
 import { useSendEmailVerificationCode } from "@app/hooks/api";
 import { useCompleteAccountSignup } from "@app/hooks/api/auth/queries";
+import { fetchOrganizations } from "@app/hooks/api/organization/queries";
 
 const CLIENT_RESEND_DELAY_SECONDS = 20;
 
@@ -29,6 +32,7 @@ export const SignupSsoPage = () => {
   const navigate = useNavigate();
   const search = useSearch({ from: ROUTE_PATHS.Auth.SignUpSsoPage.id });
   const token = search.token as string;
+  const callbackPort = search.callback_port;
 
   const [code, setCode] = useState("");
 
@@ -51,6 +55,8 @@ export const SignupSsoPage = () => {
   }, [token]);
 
   const handleSubmit = async () => {
+    const telemetry = new Telemetry().getInstance();
+
     const { token: accessToken } = await completeAccountSignup.mutateAsync({
       type: "alias",
       code,
@@ -61,23 +67,43 @@ export const SignupSsoPage = () => {
     SecurityClient.setToken(accessToken);
     const { organizationId } = jwtDecode(accessToken) as { organizationId?: string };
 
-    if (isInfisicalCloud()) {
-      window.dataLayer = window.dataLayer || [];
-      window.dataLayer.push({ event: "signup_completed" });
+    if (decoded.email) {
+      const signupEmail = decoded.email.toLowerCase();
+      telemetry.identify(signupEmail, signupEmail);
     }
 
     createNotification({
       text: "Successfully verified",
       type: "success"
     });
-    if (organizationId) {
-      navigate({
-        to: "/organizations/$orgId/projects",
-        params: { orgId: organizationId }
-      });
-    } else {
-      navigate({ to: "/login/select-organization" });
+
+    // People who already belong to an org (SAML/OIDC/LDAP, invites) are joining an existing
+    // workspace, so org setup doesn't apply; keep sending them straight in.
+    const userOrgs = await fetchOrganizations();
+    if (userOrgs.length > 0) {
+      if (callbackPort) {
+        navigate({
+          to: "/login/select-organization",
+          search: { org_id: organizationId, callback_port: callbackPort }
+        });
+      } else if (organizationId) {
+        navigate({
+          to: "/organizations/$orgId/projects",
+          params: { orgId: organizationId }
+        });
+      } else {
+        navigate({ to: "/login/select-organization" });
+      }
+      return;
     }
+
+    if (isInfisicalCloud()) {
+      window.dataLayer = window.dataLayer || [];
+      window.dataLayer.push({ event: "signup_completed" });
+    }
+    captureSignupCompleted("sso");
+
+    navigate({ to: "/organizations/onboarding", search: { callback_port: callbackPort } });
   };
 
   const handleResendCode = async () => {
@@ -98,10 +124,11 @@ export const SignupSsoPage = () => {
 
   return (
     <AuthPageLayout
-      variant="focused"
       headerAction={
         <Button asChild variant="outline" size="sm">
-          <Link to="/login">Log In</Link>
+          <Link to="/login" search={{ callback_port: callbackPort }}>
+            Log In
+          </Link>
         </Button>
       }
     >

@@ -170,11 +170,11 @@ export const useGetUserProjectFavorites = (orgId: string) =>
     queryFn: () => fetchUserProjectFavorites(orgId)
   });
 
-export const useGetOrgUsers = (orgId: string) =>
+export const useGetOrgUsers = (orgId: string, options?: { enabled?: boolean }) =>
   useQuery({
     queryKey: userKeys.getOrgUsers(orgId),
     queryFn: () => fetchOrgUsers(orgId),
-    enabled: Boolean(orgId)
+    enabled: Boolean(orgId) && (options?.enabled ?? true)
   });
 
 // mutation
@@ -188,6 +188,12 @@ export const useAddUsersToOrg = () => {
         email: string;
         link: string;
       }[];
+      /** Product-access grants are best-effort; present only when at least one grant failed. */
+      grantFailures?: {
+        projectIds: string[];
+        pamAccess: boolean;
+        agentVaultAccess: boolean;
+      };
     };
   };
 
@@ -266,22 +272,6 @@ export const useDeleteOrgMembershipBatch = () => {
     },
     onSuccess: (_, { orgId }) => {
       queryClient.invalidateQueries({ queryKey: userKeys.getOrgUsers(orgId) });
-    }
-  });
-};
-
-export const useDeactivateOrgMembership = () => {
-  const queryClient = useQueryClient();
-
-  return useMutation<object, object, DeleteOrgMembershipDTO>({
-    mutationFn: ({ membershipId, orgId }) => {
-      return apiRequest.post(
-        `/api/v2/organizations/${orgId}/memberships/${membershipId}/deactivate`
-      );
-    },
-    onSuccess: (_, { orgId, membershipId }) => {
-      queryClient.invalidateQueries({ queryKey: userKeys.getOrgUsers(orgId) });
-      queryClient.invalidateQueries({ queryKey: userKeys.getOrgMembership(orgId, membershipId) });
     }
   });
 };

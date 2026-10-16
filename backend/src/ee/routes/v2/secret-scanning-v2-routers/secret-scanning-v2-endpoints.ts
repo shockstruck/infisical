@@ -1,12 +1,15 @@
 import { z } from "zod";
 
-import { SecretScanningResourcesSchema, SecretScanningScansSchema } from "@app/db/schemas";
 import { EventType } from "@app/ee/services/audit-log/audit-log-types";
 import {
   SecretScanningDataSource,
   SecretScanningScanStatus
 } from "@app/ee/services/secret-scanning-v2/secret-scanning-v2-enums";
 import { SECRET_SCANNING_DATA_SOURCE_NAME_MAP } from "@app/ee/services/secret-scanning-v2/secret-scanning-v2-maps";
+import {
+  SecretScanningResourceSchema,
+  SecretScanningScanSchema
+} from "@app/ee/services/secret-scanning-v2/secret-scanning-v2-schemas";
 import {
   TSecretScanningDataSource,
   TSecretScanningDataSourceInput
@@ -33,7 +36,7 @@ export const registerSecretScanningEndpoints = <
   server: FastifyZodProvider;
   createSchema: z.ZodType<{
     name: string;
-    projectId: string;
+    projectId?: string;
     connectionId?: string;
     config: Partial<I["config"]>;
     description?: string | null;
@@ -57,7 +60,7 @@ export const registerSecretScanningEndpoints = <
       rateLimit: readLimit
     },
     schema: {
-      hide: false,
+      hide: true,
       operationId: `list${sourceTypeId}DataSources`,
       tags: [ApiDocsTags.SecretScanning],
       description: `List the ${sourceType} Data Sources for the specified project.`,
@@ -66,17 +69,16 @@ export const registerSecretScanningEndpoints = <
           .string()
           .trim()
           .min(1, "Project ID required")
+          .optional()
           .describe(SecretScanningDataSources.LIST(type).projectId)
       }),
       response: {
         200: z.object({ dataSources: responseSchema.array() })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
-      const {
-        query: { projectId }
-      } = req;
+      const projectId = req.internalSecretScanningProjectId;
 
       const dataSources = (await server.services.secretScanningV2.listSecretScanningDataSourcesByProjectId(
         { projectId, type },
@@ -107,7 +109,7 @@ export const registerSecretScanningEndpoints = <
       rateLimit: readLimit
     },
     schema: {
-      hide: false,
+      hide: true,
       operationId: `get${sourceTypeId}DataSource`,
       tags: [ApiDocsTags.SecretScanning],
       description: `Get the specified ${sourceType} Data Source by ID.`,
@@ -118,7 +120,7 @@ export const registerSecretScanningEndpoints = <
         200: z.object({ dataSource: responseSchema })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const { dataSourceId } = req.params;
 
@@ -150,7 +152,7 @@ export const registerSecretScanningEndpoints = <
       rateLimit: readLimit
     },
     schema: {
-      hide: false,
+      hide: true,
       operationId: `get${sourceTypeId}DataSourceByName`,
       tags: [ApiDocsTags.SecretScanning],
       description: `Get the specified ${sourceType} Data Source by name and project ID.`,
@@ -166,16 +168,17 @@ export const registerSecretScanningEndpoints = <
           .string()
           .trim()
           .min(1, "Project ID required")
+          .optional()
           .describe(SecretScanningDataSources.GET_BY_NAME(type).projectId)
       }),
       response: {
         200: z.object({ dataSource: responseSchema })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const { sourceName } = req.params;
-      const { projectId } = req.query;
+      const projectId = req.internalSecretScanningProjectId;
 
       const dataSource = (await server.services.secretScanningV2.findSecretScanningDataSourceByName(
         { sourceName, projectId, type },
@@ -205,7 +208,7 @@ export const registerSecretScanningEndpoints = <
       rateLimit: writeLimit
     },
     schema: {
-      hide: false,
+      hide: true,
       operationId: `create${sourceTypeId}DataSource`,
       tags: [ApiDocsTags.SecretScanning],
       description: `Create ${
@@ -218,8 +221,9 @@ export const registerSecretScanningEndpoints = <
     },
     onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
     handler: async (req) => {
+      const projectId = req.internalSecretScanningProjectId;
       const dataSource = (await server.services.secretScanningV2.createSecretScanningDataSource(
-        { ...req.body, type },
+        { ...req.body, projectId, type },
         req.permission
       )) as T;
 
@@ -260,7 +264,7 @@ export const registerSecretScanningEndpoints = <
       rateLimit: writeLimit
     },
     schema: {
-      hide: false,
+      hide: true,
       operationId: `update${sourceTypeId}DataSource`,
       tags: [ApiDocsTags.SecretScanning],
       description: `Update the specified ${sourceType} Data Source.`,
@@ -305,7 +309,7 @@ export const registerSecretScanningEndpoints = <
       rateLimit: writeLimit
     },
     schema: {
-      hide: false,
+      hide: true,
       operationId: `delete${sourceTypeId}DataSource`,
       tags: [ApiDocsTags.SecretScanning],
       description: `Delete the specified ${sourceType} Data Source.`,
@@ -348,7 +352,7 @@ export const registerSecretScanningEndpoints = <
       rateLimit: writeLimit
     },
     schema: {
-      hide: false,
+      hide: true,
       operationId: `trigger${sourceTypeId}DataSourceScan`,
       tags: [ApiDocsTags.SecretScanning],
       description: `Trigger a scan for the specified ${sourceType} Data Source.`,
@@ -359,7 +363,7 @@ export const registerSecretScanningEndpoints = <
         200: z.object({ dataSource: responseSchema })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const { dataSourceId } = req.params;
 
@@ -391,7 +395,7 @@ export const registerSecretScanningEndpoints = <
       rateLimit: writeLimit
     },
     schema: {
-      hide: false,
+      hide: true,
       operationId: `trigger${sourceTypeId}DataSourceResourceScan`,
       tags: [ApiDocsTags.SecretScanning],
       description: `Trigger a scan for the specified ${sourceType} Data Source resource.`,
@@ -403,7 +407,7 @@ export const registerSecretScanningEndpoints = <
         200: z.object({ dataSource: responseSchema })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const { dataSourceId, resourceId } = req.params;
 
@@ -436,7 +440,7 @@ export const registerSecretScanningEndpoints = <
       rateLimit: readLimit
     },
     schema: {
-      hide: false,
+      hide: true,
       operationId: `list${sourceTypeId}DataSourceResources`,
       tags: [ApiDocsTags.SecretScanning],
       description: `Get the resources associated with the specified ${sourceType} Data Source by ID.`,
@@ -444,10 +448,10 @@ export const registerSecretScanningEndpoints = <
         dataSourceId: z.string().uuid().describe(SecretScanningDataSources.LIST_RESOURCES(type).dataSourceId)
       }),
       response: {
-        200: z.object({ resources: SecretScanningResourcesSchema.array() })
+        200: z.object({ resources: SecretScanningResourceSchema.array() })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const { dataSourceId } = req.params;
 
@@ -481,7 +485,7 @@ export const registerSecretScanningEndpoints = <
       rateLimit: readLimit
     },
     schema: {
-      hide: false,
+      hide: true,
       operationId: `list${sourceTypeId}DataSourceScans`,
       tags: [ApiDocsTags.SecretScanning],
       description: `Get the scans associated with the specified ${sourceType} Data Source by ID.`,
@@ -489,10 +493,10 @@ export const registerSecretScanningEndpoints = <
         dataSourceId: z.string().uuid().describe(SecretScanningDataSources.LIST_SCANS(type).dataSourceId)
       }),
       response: {
-        200: z.object({ scans: SecretScanningScansSchema.array() })
+        200: z.object({ scans: SecretScanningScanSchema.array() })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const { dataSourceId } = req.params;
 
@@ -533,7 +537,7 @@ export const registerSecretScanningEndpoints = <
       }),
       response: {
         200: z.object({
-          resources: SecretScanningResourcesSchema.extend({
+          resources: SecretScanningResourceSchema.extend({
             lastScannedAt: z.date().nullish(),
             lastScanStatus: z.nativeEnum(SecretScanningScanStatus).nullish(),
             lastScanStatusMessage: z.string().nullish(),
@@ -542,7 +546,7 @@ export const registerSecretScanningEndpoints = <
         })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.OAUTH]),
     handler: async (req) => {
       const { dataSourceId } = req.params;
 
@@ -584,7 +588,7 @@ export const registerSecretScanningEndpoints = <
       }),
       response: {
         200: z.object({
-          scans: SecretScanningScansSchema.extend({
+          scans: SecretScanningScanSchema.extend({
             unresolvedFindings: z.number(),
             resolvedFindings: z.number(),
             resourceName: z.string()
@@ -592,7 +596,7 @@ export const registerSecretScanningEndpoints = <
         })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.OAUTH]),
     handler: async (req) => {
       const { dataSourceId } = req.params;
 

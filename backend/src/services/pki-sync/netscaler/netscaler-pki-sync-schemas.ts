@@ -2,11 +2,14 @@ import { z } from "zod";
 
 import { openApiHidden } from "@app/server/lib/schemas";
 import { AppConnection } from "@app/services/app-connection/app-connection-enums";
+import { pkiDescriptionSchema } from "@app/services/certificate-common/certificate-constants";
 import { PkiSync } from "@app/services/pki-sync/pki-sync-enums";
 import {
   BasePkiSyncOptionsSchema,
   buildDestinationCertificateNameSchema,
-  PkiSyncSchema
+  PkiSyncFiltersField,
+  PkiSyncSchema,
+  UpdatePkiSyncFiltersField
 } from "@app/services/pki-sync/pki-sync-schemas";
 
 import { NETSCALER_NAMING } from "./netscaler-pki-sync-constants";
@@ -31,7 +34,7 @@ export const NetScalerPkiSyncSchema = PkiSyncSchema.extend({
 
 export const CreateNetScalerPkiSyncSchema = z.object({
   name: z.string().trim().min(1).max(256),
-  description: z.string().optional(),
+  description: pkiDescriptionSchema.optional(),
   isAutoSyncEnabled: z.boolean().default(true),
   destinationConfig: NetScalerPkiSyncConfigSchema,
   syncOptions: NetScalerPkiSyncOptionsSchema,
@@ -39,17 +42,19 @@ export const CreateNetScalerPkiSyncSchema = z.object({
   connectionId: z.string(),
   projectId: z.string().trim().min(1).optional().describe(openApiHidden()),
   applicationId: z.string().uuid().optional(),
-  certificateIds: z.array(z.string().uuid()).optional()
+  certificateIds: z.array(z.string().uuid()).optional(),
+  filters: PkiSyncFiltersField
 });
 
 export const UpdateNetScalerPkiSyncSchema = z.object({
   name: z.string().trim().min(1).max(256).optional(),
-  description: z.string().optional(),
+  description: pkiDescriptionSchema.optional(),
   isAutoSyncEnabled: z.boolean().optional(),
   destinationConfig: NetScalerPkiSyncConfigSchema.optional(),
   syncOptions: NetScalerPkiSyncOptionsSchema.optional(),
   subscriberId: z.string().nullish(),
-  connectionId: z.string().optional()
+  connectionId: z.string().optional(),
+  filters: UpdatePkiSyncFiltersField
 });
 
 export const NetScalerPkiSyncListItemSchema = z.object({

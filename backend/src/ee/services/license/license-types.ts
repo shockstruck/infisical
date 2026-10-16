@@ -1,11 +1,11 @@
 import { TOrgPermission } from "@app/lib/types";
+import { TEntitlementsResponse } from "@app/services/license-client/license-client-types";
 
 export enum InstanceType {
   OnPrem = "self-hosted",
+  // Self-hosted online license: features are resolved from License Server v2.
   EnterpriseOnPrem = "enterprise-self-hosted",
   EnterpriseOnPremOffline = "enterprise-self-hosted-offline",
-  // Self-hosted instance whose license is resolved from License Server v2 (new "infisical_lk_" key).
-  EnterpriseOnPremV2 = "enterprise-self-hosted-v2",
   Cloud = "cloud"
 }
 
@@ -21,41 +21,58 @@ export type TOfflineLicense = {
   issuedAt: string;
   expiresAt: string | null;
   terminatesAt: string | null;
+  // v1 (or absent) offline licenses carry the legacy feature-flag set directly; version 2 licenses
+  // carry License Server v2 entitlements, which we project into the same feature shape.
+  version?: number;
   features: TFeatureSet;
+  entitlements?: TEntitlementsResponse;
 };
 
-export type TPlanBillingInfo = {
-  currentPeriodStart: number;
-  currentPeriodEnd: number;
-  interval: "month" | "year";
-  intervalCount: number;
-  amount: number;
-  quantity: number;
+export type TPlanNotice = {
+  type: "trial_payment_failed";
+  productKey: string;
+  trialPlanKey: string | null;
+  accessEndsAt: string;
+  nextAttemptAt: string | null;
+  cause: string | null;
+};
+
+export type TOrgSeatUsage = {
+  membersUsed: number;
+  identitiesUsed: number;
 };
 
 export type TFeatureSet = {
   _id: null;
   slug: string | null;
+  productPlans?: {
+    productKey: string;
+    planKey: string | null;
+    status: string | null;
+    trialPlanKey: string | null;
+    trialEndsAt: string | null;
+  }[];
+  notices?: TPlanNotice[];
+  // True when features are sourced from an offline (air-gapped) license; the billing UI renders a
+  // read-only offline banner instead of the live billing surface.
+  isOffline?: boolean;
   tier: number;
   workspaceLimit: number | null;
   workspacesUsed: number;
   dynamicSecret: boolean;
   memberLimit: number | null;
-  membersUsed: number;
   identityLimit: number | null;
-  identitiesUsed: number;
   enforceIdentityLimit?: boolean;
   subOrganization: boolean;
   environmentLimit: number | null;
   environmentsUsed: number;
-  secretVersioning: boolean;
+  secretVersioning: true;
   pitRecovery: boolean;
   ipAllowlisting: boolean;
   rbac: boolean;
-  customRateLimits: boolean;
   customAlerts: boolean;
   auditLogs: boolean;
-  auditLogsRetentionDays: number;
+  auditLogsRetentionDays: number | null;
   auditLogStreams: boolean;
   auditLogStreamLimit: number;
   githubOrgSync: boolean;
@@ -72,7 +89,6 @@ export type TFeatureSet = {
   has_used_trial: boolean;
   secretApproval: boolean;
   secretRotation: boolean;
-  caCrl: boolean;
   instanceUserManagement: boolean;
   externalKms: boolean;
   rateLimits: {
@@ -80,45 +96,62 @@ export type TFeatureSet = {
     writeLimit: number;
     secretsLimit: number;
   };
-  pkiEst: boolean;
-  pkiAcme: boolean;
-  pkiScep: boolean;
-  pkiPqc: boolean;
-  // PKI code signing capability. null (default) is ignored (no restriction); an explicit boolean gates
-  // code signer creation.
-  pkiCodeSigning: null;
   kmsPqc: boolean;
   enforceMfa: boolean;
   projectTemplates: boolean;
   kmip: boolean;
   gateway: boolean;
   gatewayPool: boolean;
-  pamSlackNotifications: boolean;
-  sshHostGroups: boolean;
+  pamEnterpriseAlerting: boolean;
   secretScanning: boolean;
   enterpriseSecretSyncs: boolean;
-  enterpriseCertificateSyncs: boolean;
   enterpriseAppConnections: boolean;
   machineIdentityAuthTemplates: boolean;
-  pkiLegacyTemplates: boolean;
   fips: boolean;
   eventSubscriptions: boolean;
   secretShareExternalBranding: boolean;
   honeyTokens: boolean;
   honeyTokenLimit: number;
   secretsBrokering: boolean;
+  agentVaultByoS3: boolean;
   secretSyncLimit: null;
-  maxInternalCas: null;
   maxPamAccounts: null;
+
+  // PKI / Cert Manager
+  pkiAcme: boolean;
+  pkiEst: boolean;
+  pkiScep: boolean;
+  pkiPqc: boolean;
+  // caCrl defaults on, so self-hosted OSS keeps it; the License Server's free-plan default is what
+  // withholds it on cloud.
+  caCrl: boolean;
+  pkiOcsp: boolean;
+  pkiEnterpriseCaIntegrations: boolean;
+  pkiExternalIntermediateCa: boolean;
+  pkiDiscovery: boolean;
+  pkiEnterpriseAlerting: boolean;
+  pkiApprovals: boolean;
+  pkiSyncs: boolean;
+  pkiLegacyTemplates: boolean;
+  pkiCodeSigning: boolean;
+  // maxCas covers every CA type, maxInternalCas covers INTERNAL only. Both enforced, whichever binds
+  // first. Typed number | null rather than the literal null the flags above use, so consumers can
+  // name the limit in an error without casting.
+  maxCas: number | null;
+  maxInternalCas: number | null;
+  maxCertificates: number | null;
+  // Wildcards have no separate boolean gate: 0 means the plan does not include them at all, which is
+  // how the free tier withholds them. A wildcard certificate counts against maxCertificates too.
+  maxWildcardCertificates: number | null;
+  maxSansPerCertificate: number | null;
+
   pam: null;
   certManager: null;
   secretsTemporaryAccess: null;
   enterprisePamAccount: null;
+  crossProjectSecretSharing: boolean;
+  secretsFolderRbac: boolean;
 };
-
-export type TOrgPlansTableDTO = {
-  billingCycle: string;
-} & TOrgPermission;
 
 export type TOrgPlanDTO = {
   projectId?: string;
@@ -126,44 +159,10 @@ export type TOrgPlanDTO = {
   rootOrgId: string;
 } & TOrgPermission;
 
-export type TStartOrgTrialDTO = {
-  success_url: string;
-} & TOrgPermission;
-
-export type TCreateOrgPortalSession = TOrgPermission;
-
-export type TGetOrgBillInfoDTO = TOrgPermission;
-
-export type TOrgPlanTableDTO = TOrgPermission;
-
-export type TOrgBillingDetailsDTO = TOrgPermission;
-
-export type TUpdateOrgBillingDetailsDTO = TOrgPermission & {
-  name?: string;
-  email?: string;
-};
-
-export type TOrgPmtMethodsDTO = TOrgPermission;
-
-export type TAddOrgPmtMethodDTO = TOrgPermission & { success_url: string; cancel_url: string };
-
-export type TDelOrgPmtMethodDTO = TOrgPermission & { pmtMethodId: string };
-
-export type TGetOrgTaxIdDTO = TOrgPermission;
-
-export type TAddOrgTaxIdDTO = TOrgPermission & { type: string; value: string };
-
-export type TDelOrgTaxIdDTO = TOrgPermission & { taxId: string };
-
-export type TOrgInvoiceDTO = TOrgPermission;
-
-export type TOrgLicensesDTO = TOrgPermission;
-
 export enum LicenseType {
   Offline = "offline",
-  Online = "online",
-  // New self-hosted key (prefix "infisical_lk_") that resolves entitlements from License Server v2.
-  OnlineV2 = "online-v2"
+  // Self-hosted online license key; resolves entitlements from License Server v2.
+  Online = "online"
 }
 
 export type TLicenseKeyConfig =

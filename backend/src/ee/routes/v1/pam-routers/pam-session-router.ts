@@ -11,6 +11,7 @@ import { ApiDocsTags } from "@app/lib/api-docs/constants";
 import { BadRequestError, NotFoundError } from "@app/lib/errors";
 import { readLimit, writeLimit } from "@app/server/config/rateLimiter";
 import { getTelemetryDistinctId } from "@app/server/lib/telemetry";
+import { isUserSessionAuth } from "@app/server/plugins/auth/inject-identity";
 import { verifyAuth } from "@app/server/plugins/auth/verify-auth";
 import { ActorType, AuthMode } from "@app/services/auth/auth-type";
 import { TokenType } from "@app/services/auth-token/auth-token-types";
@@ -22,6 +23,7 @@ const SanitizedSessionSchema = PamSessionsSchema.pick({
   accountType: true,
   accountName: true,
   userId: true,
+  identityId: true,
   actorName: true,
   actorEmail: true,
   actorIp: true,
@@ -73,7 +75,7 @@ export const registerPamSessionRouter = async (server: FastifyZodProvider) => {
         200: z.object({ sessions: SanitizedSessionSchema.array(), totalCount: z.number() })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const { sessions, totalCount } = await server.services.pamSession.listSessions(
         req.internalPamProjectId,
@@ -104,7 +106,7 @@ export const registerPamSessionRouter = async (server: FastifyZodProvider) => {
         200: z.object({ session: SanitizedSessionSchema })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const session = await server.services.pamSession.getSessionById(req.params.sessionId, {
         actor: req.permission.type,
@@ -148,7 +150,11 @@ export const registerPamSessionRouter = async (server: FastifyZodProvider) => {
     },
     onRequest: verifyAuth([AuthMode.GATEWAY_ACCESS_TOKEN]),
     handler: async (req) => {
-      const result = await server.services.pamSession.getSessionCredentials(req.params.sessionId, req.permission.id);
+      const result = await server.services.pamSession.getSessionCredentials(
+        req.params.sessionId,
+        req.permission.id,
+        req.permission.orgId
+      );
 
       if (result.sessionStarted) {
         await server.services.auditLog.createAuditLog({
@@ -245,7 +251,7 @@ export const registerPamSessionRouter = async (server: FastifyZodProvider) => {
         200: z.object({ session: SanitizedSessionSchema })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
       const { session, projectId, accountName } = await server.services.pamSession.terminateSession(
         req.params.sessionId,
@@ -324,7 +330,9 @@ export const registerPamWebAccessRouter = async (server: FastifyZodProvider) => 
           sessionId: z.string().describe("The ID of the created session"),
           accountType: z.nativeEnum(PamAccountType).describe("The account type"),
           metadata: z.record(z.string()).optional().describe("Account-type-specific metadata (e.g., username)"),
+          gatewayId: z.string().optional().describe("The ID of the gateway the connection details are for"),
           relayHost: z.string().optional().describe("The relay host to connect to"),
+          directAddress: z.string().optional().describe("The gateway address for a direct connection"),
           relayClientCertificate: z.string().optional().describe("Client certificate for the relay connection"),
           relayClientPrivateKey: z.string().optional().describe("Client private key for the relay connection"),
           relayServerCertificateChain: z
@@ -340,10 +348,17 @@ export const registerPamWebAccessRouter = async (server: FastifyZodProvider) => 
         })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
-      if (req.auth.authMode !== AuthMode.JWT) {
-        throw new BadRequestError({ message: "Account access requires JWT authentication" });
+      let actorEmail = "";
+      let actorName = "";
+      if (isUserSessionAuth(req.auth)) {
+        actorEmail = req.auth.user.email ?? "";
+        actorName = `${req.auth.user.firstName ?? ""} ${req.auth.user.lastName ?? ""}`.trim();
+      } else if (req.auth.authMode === AuthMode.IDENTITY_ACCESS_TOKEN) {
+        actorName = req.auth.identityName;
+      } else {
+        throw new BadRequestError({ message: "Account access requires user or machine identity authentication" });
       }
 
       const result = await server.services.pamSession.access({
@@ -355,13 +370,14 @@ export const registerPamWebAccessRouter = async (server: FastifyZodProvider) => 
           actorOrgId: req.permission.orgId,
           actorAuthMethod: req.permission.authMethod
         },
-        actorEmail: req.auth.user.email ?? "",
-        actorName: `${req.auth.user.firstName ?? ""} ${req.auth.user.lastName ?? ""}`.trim(),
+        actorEmail,
+        actorName,
         actorIp: req.realIp ?? "",
         actorUserAgent: req.headers["user-agent"] ?? "",
         reason: req.body.reason,
         duration: req.body.duration,
         mfaSessionId: req.body.mfaSessionId,
+        tokenVersionId: isUserSessionAuth(req.auth) ? req.auth.tokenVersionId : undefined,
         accessMethod: req.body.accessMethod === "web" ? PamAccessMethod.Web : PamAccessMethod.Cli,
         targetHost: req.body.targetHost
       });
@@ -399,7 +415,9 @@ export const registerPamWebAccessRouter = async (server: FastifyZodProvider) => 
         sessionId: result.sessionId,
         accountType: result.accountType,
         metadata: result.metadata,
+        gatewayId: result.gatewayId,
         relayHost: result.relayHost,
+        directAddress: result.directAddress,
         relayClientCertificate: result.relayClientCertificate,
         relayClientPrivateKey: result.relayClientPrivateKey,
         relayServerCertificateChain: result.relayServerCertificateChain,
@@ -436,10 +454,10 @@ export const registerPamWebAccessRouter = async (server: FastifyZodProvider) => 
         200: z.object({ ticket: z.string() })
       }
     },
-    onRequest: verifyAuth([AuthMode.JWT]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.OAUTH]),
     handler: async (req) => {
-      if (req.auth.authMode !== AuthMode.JWT) {
-        throw new BadRequestError({ message: "Web access requires JWT authentication" });
+      if (!isUserSessionAuth(req.auth)) {
+        throw new BadRequestError({ message: "Web access requires user authentication" });
       }
 
       const { ticket } = await server.services.pamWebAccess.issueWebSocketTicket({
@@ -449,6 +467,8 @@ export const registerPamWebAccessRouter = async (server: FastifyZodProvider) => 
         actor: req.permission,
         actorEmail: req.auth.user.email ?? "",
         actorName: `${req.auth.user.firstName ?? ""} ${req.auth.user.lastName ?? ""}`.trim(),
+        tokenVersionId: req.auth.tokenVersionId,
+        accessVersion: req.auth.token.accessVersion,
         auditLogInfo: req.auditLogInfo,
         reason: req.body.reason,
         mfaSessionId: req.body.mfaSessionId,
@@ -537,6 +557,8 @@ export const registerPamWebAccessRouter = async (server: FastifyZodProvider) => 
             accountType: z.string(),
             actorEmail: z.string(),
             actorName: z.string(),
+            tokenVersionId: z.string().uuid().optional(),
+            accessVersion: z.number().optional(),
             reason: z.string().nullable().optional(),
             maxSessionDurationMs: z.number().optional(),
             selectedHost: z.string().nullable().optional(),
@@ -556,6 +578,15 @@ export const registerPamWebAccessRouter = async (server: FastifyZodProvider) => 
           connection.off("message", preAuthHandler);
           connection.close(4001, "Invalid or expired ticket");
           return;
+        }
+
+        if (payload.tokenVersionId && payload.accessVersion !== undefined) {
+          await server.services.authToken.validateUserSessionFreshness({
+            userId,
+            tokenVersionId: payload.tokenVersionId,
+            accessVersion: payload.accessVersion,
+            readFromPrimary: true
+          });
         }
 
         await server.services.pamWebAccess.handleWebSocketConnection({

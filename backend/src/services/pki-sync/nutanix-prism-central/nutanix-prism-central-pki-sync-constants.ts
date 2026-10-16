@@ -7,5 +7,7 @@ export const NUTANIX_PRISM_CENTRAL_PKI_SYNC_LIST_OPTION = {
   destination: PkiSync.NutanixPrismCentral,
   canImportCertificates: false,
   canRemoveCertificates: false,
+  canRunPostSyncCommand: false,
+  canRunHealthCheckCommand: false,
   maxCertificates: 1
 } as const;

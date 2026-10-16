@@ -4,7 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
 import { z } from "zod";
 
-import { UpgradePlanModal } from "@app/components/license/UpgradePlanModal";
+import { CustomRolesUpgradeIntent, UpgradeGate } from "@app/components/license/UpgradeGate";
 import { createNotification } from "@app/components/notifications";
 import { RoleOption } from "@app/components/roles";
 import {
@@ -136,7 +136,14 @@ const CreateOrgIdentityForm = ({ onClose }: { onClose: () => void }) => {
             <Field>
               <FieldLabel>Name</FieldLabel>
               <FieldContent>
-                <Input {...field} autoFocus placeholder="Machine 1" isError={Boolean(error)} />
+                <Input
+                  {...field}
+                  autoFocus
+                  placeholder="Machine 1"
+                  isError={Boolean(error)}
+                  autoComplete="off"
+                  name="machine-identity-name"
+                />
               </FieldContent>
               {error && <FieldError>{error.message}</FieldError>}
             </Field>
@@ -173,11 +180,14 @@ const CreateOrgIdentityForm = ({ onClose }: { onClose: () => void }) => {
           Cancel
         </Button>
       </SheetFooter>
-      <UpgradePlanModal
+      <UpgradeGate
+        paywallKey="organization.create-org-identity-sheet"
         isOpen={upgradePlanPopUp.upgradePlan.isOpen}
         onOpenChange={(isOpen) => handleUpgradePlanPopUpToggle("upgradePlan", isOpen)}
-        text="Assigning custom roles to machine identities can be unlocked if you upgrade to Infisical Enterprise plan."
-        isEnterpriseFeature
+        intent={{
+          ...CustomRolesUpgradeIntent,
+          isEnterpriseFeature: true
+        }}
       />
     </form>
   );

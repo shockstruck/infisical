@@ -27,7 +27,11 @@ export const SECRET_ROTATION_NAME_MAP: Record<SecretRotation, string> = {
   [SecretRotation.DatadogApiKey]: "Datadog API Key",
   [SecretRotation.ConvexAccessKey]: "Convex Access Key",
   [SecretRotation.FireworksApiKey]: "Fireworks Secret",
-  [SecretRotation.SnowflakeUserKeyPair]: "Snowflake User Key Pair"
+  [SecretRotation.SnowflakeUserKeyPair]: "Snowflake User Key Pair",
+  [SecretRotation.CloudflareApiToken]: "Cloudflare API Token",
+  [SecretRotation.CloudflareR2AccessKey]: "Cloudflare R2 Access Key",
+  [SecretRotation.StripeApiKey]: "Stripe API Key",
+  [SecretRotation.GcpServiceAccountKey]: "GCP Service Account Key"
 };
 
 export const SECRET_ROTATION_CONNECTION_MAP: Record<SecretRotation, AppConnection> = {
@@ -56,5 +60,18 @@ export const SECRET_ROTATION_CONNECTION_MAP: Record<SecretRotation, AppConnectio
   [SecretRotation.DatadogApiKey]: AppConnection.Datadog,
   [SecretRotation.ConvexAccessKey]: AppConnection.Convex,
   [SecretRotation.FireworksApiKey]: AppConnection.Fireworks,
-  [SecretRotation.SnowflakeUserKeyPair]: AppConnection.Snowflake
+  [SecretRotation.SnowflakeUserKeyPair]: AppConnection.Snowflake,
+  [SecretRotation.CloudflareApiToken]: AppConnection.Cloudflare,
+  [SecretRotation.CloudflareR2AccessKey]: AppConnection.Cloudflare,
+  [SecretRotation.StripeApiKey]: AppConnection.Stripe,
+  [SecretRotation.GcpServiceAccountKey]: AppConnection.GCP
 };
+
+const SECRET_ROTATION_ADDITIONAL_CONNECTION_MAP: Partial<Record<SecretRotation, AppConnection[]>> = {
+  [SecretRotation.HpIloLocalAccount]: [AppConnection.HpeIloRedFish]
+};
+
+export const getSecretRotationConnectionApps = (type: SecretRotation): [AppConnection, ...AppConnection[]] => [
+  SECRET_ROTATION_CONNECTION_MAP[type],
+  ...(SECRET_ROTATION_ADDITIONAL_CONNECTION_MAP[type] ?? [])
+];

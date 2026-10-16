@@ -3,14 +3,13 @@ import { join } from "path";
 
 import { scanContentAndGetFindings } from "@app/ee/services/secret-scanning/secret-scanning-queue/secret-scanning-fns";
 import { SecretMatch } from "@app/ee/services/secret-scanning/secret-scanning-queue/secret-scanning-queue-types";
+import { SecretScanningFindingSeverity } from "@app/ee/services/secret-scanning-v2/secret-scanning-v2-enums";
 import {
-  SecretScanningFindingSeverity,
-  SecretScanningResource
-} from "@app/ee/services/secret-scanning-v2/secret-scanning-v2-enums";
-import {
+  assertProviderRepositorySizeWithinLimit,
   cloneRepository,
   convertPatchLineToFileLineNumber,
-  replaceNonChangesWithNewlines
+  replaceNonChangesWithNewlines,
+  toFindingDetails
 } from "@app/ee/services/secret-scanning-v2/secret-scanning-v2-fns";
 import {
   TSecretScanningFactoryGetDiffScanFindingsPayload,
@@ -25,7 +24,6 @@ import {
 } from "@app/ee/services/secret-scanning-v2/secret-scanning-v2-types";
 import { getConfig } from "@app/lib/config/env";
 import { BadRequestError } from "@app/lib/errors";
-import { titleCaseToCamelCase } from "@app/lib/fn";
 import { alphaNumericNanoId } from "@app/lib/nanoid";
 import { GitLabProjectRegex } from "@app/lib/regex";
 import { TGitLabConnection } from "@app/services/app-connection/gitlab";
@@ -213,8 +211,7 @@ export const GitLabSecretScanningFactory = ({ appConnectionDAL, kmsService }: TS
       return [
         {
           name: project.pathWithNamespace,
-          externalId: project.id.toString(),
-          type: SecretScanningResource.Project
+          externalId: project.id.toString()
         }
       ];
     }
@@ -236,8 +233,7 @@ export const GitLabSecretScanningFactory = ({ appConnectionDAL, kmsService }: TS
 
     return filteredProjects.map(({ id, pathWithNamespace }) => ({
       name: pathWithNamespace,
-      externalId: id.toString(),
-      type: SecretScanningResource.Project
+      externalId: id.toString()
     }));
   };
 
@@ -259,6 +255,14 @@ export const GitLabSecretScanningFactory = ({ appConnectionDAL, kmsService }: TS
     if (!GitLabProjectRegex.test(resourceName)) {
       throw new Error("Invalid GitLab project name");
     }
+
+    // Checked before the clone: measuring afterwards means the network, wall clock and ephemeral
+    // disk have already been spent. `repositorySize` is in bytes and is only returned to callers
+    // with sufficient privileges — when it is absent the post-clone check is the backstop.
+    await assertProviderRepositorySizeWithinLimit(resourceName, async () => {
+      const project = await client.Projects.show(resourceName, { statistics: true });
+      return project.statistics?.repositorySize;
+    });
 
     const validatedHostname = new URL(instanceUrl).host;
 
@@ -299,8 +303,7 @@ export const GitLabSecretScanningFactory = ({ appConnectionDAL, kmsService }: TS
   > = ({ project }) => {
     return {
       name: project.path_with_namespace,
-      externalId: project.id.toString(),
-      type: SecretScanningResource.Project
+      externalId: project.id.toString()
     };
   };
 
@@ -354,7 +357,10 @@ export const GitLabSecretScanningFactory = ({ appConnectionDAL, kmsService }: TS
             Message: commit.message,
             Fingerprint: `${commit.id}:${commitDiff.newPath}:${finding.RuleID}:${startLine}:${startColumn}`,
             Date: commit.timestamp,
-            Link: `https://gitlab.com/${resourceName}/blob/${commit.id}/${commitDiff.newPath}#L${startLine}`
+            Attributes: {
+              ...finding.Attributes,
+              url: `https://gitlab.com/${resourceName}/blob/${commit.id}/${commitDiff.newPath}#L${startLine}`
+            }
           };
         });
 
@@ -362,19 +368,12 @@ export const GitLabSecretScanningFactory = ({ appConnectionDAL, kmsService }: TS
       }
     }
 
-    return allFindings.map(
-      ({
-        // discard match and secret as we don't want to store
-        Match,
-        Secret,
-        ...finding
-      }) => ({
-        details: titleCaseToCamelCase(finding),
-        fingerprint: finding.Fingerprint,
-        severity: SecretScanningFindingSeverity.High,
-        rule: finding.RuleID
-      })
-    );
+    return allFindings.map((finding) => ({
+      details: toFindingDetails(finding),
+      fingerprint: finding.Fingerprint,
+      severity: SecretScanningFindingSeverity.High,
+      rule: finding.RuleID
+    }));
   };
 
   const validateConfigUpdate: TSecretScanningFactoryValidateConfigUpdate<

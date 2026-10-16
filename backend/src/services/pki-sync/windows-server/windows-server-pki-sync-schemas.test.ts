@@ -58,3 +58,38 @@ describe("Windows Server destinationPath validation", () => {
     expect(parsePath("")).toBe(false);
   });
 });
+
+describe("Windows Server postSyncCommand validation", () => {
+  const parseCommand = (postSyncCommand: string) =>
+    WindowsServerPkiSyncOptionsSchema.safeParse({ certificateNameSchema: "server", postSyncCommand });
+
+  test("accepts a single-line and a multi-line PowerShell command", () => {
+    expect(parseCommand('Restart-Service -Name "W3SVC"').success).toBe(true);
+    expect(parseCommand("Import-PfxCertificate -FilePath {{certificatePath}}\niisreset").success).toBe(true);
+  });
+
+  test("accepts the values that mean 'no command', leaving normalization to the service", () => {
+    expect(parseCommand("").success).toBe(true);
+    expect(parseCommand("   ").data?.postSyncCommand).toBe("");
+    expect(
+      WindowsServerPkiSyncOptionsSchema.safeParse({ certificateNameSchema: "server", postSyncCommand: null }).data
+        ?.postSyncCommand
+    ).toBeNull();
+  });
+
+  test("rejects a command beyond the length limit", () => {
+    expect(parseCommand("a".repeat(8192)).success).toBe(true);
+    expect(parseCommand("a".repeat(8193)).success).toBe(false);
+  });
+
+  test("accepts a non-ASCII command", () => {
+    // The gateway base64-encodes the script, so the host's console code page cannot alter it on the
+    // way in and the operator is not restricted to ASCII.
+    expect(parseCommand("Write-Output 'café'").success).toBe(true);
+    expect(parseCommand("Restart-Service -Name 'W3SVC'\r\n\tWrite-Output 'ok'").success).toBe(true);
+  });
+
+  test("is optional", () => {
+    expect(WindowsServerPkiSyncOptionsSchema.safeParse({ certificateNameSchema: "server" }).success).toBe(true);
+  });
+});

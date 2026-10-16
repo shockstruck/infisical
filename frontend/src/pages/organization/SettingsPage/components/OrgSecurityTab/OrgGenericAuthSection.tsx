@@ -1,6 +1,6 @@
 import { Fingerprint } from "lucide-react";
 
-import { UpgradePlanModal } from "@app/components/license/UpgradePlanModal";
+import { MfaEnforcementUpgradeIntent, UpgradeGate } from "@app/components/license/UpgradeGate";
 import { createNotification } from "@app/components/notifications";
 import { OrgPermissionCan } from "@app/components/permissions";
 import {
@@ -21,7 +21,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  Switch
+  Toggle
 } from "@app/components/v3";
 import {
   OrgPermissionActions,
@@ -100,7 +100,7 @@ export const OrgGenericAuthSection = () => {
               </FieldContent>
               <OrgPermissionCan I={OrgPermissionActions.Edit} a={OrgPermissionSubjects.Sso}>
                 {(isAllowed) => (
-                  <Switch
+                  <Toggle
                     id="enforce-org-mfa"
                     variant="org"
                     checked={currentOrg?.enforceMfa ?? false}
@@ -137,10 +137,14 @@ export const OrgGenericAuthSection = () => {
           </FieldGroup>
         </CardContent>
       </Card>
-      <UpgradePlanModal
+      <UpgradeGate
+        paywallKey="organization.org-generic-auth"
         isOpen={popUp.upgradePlan.isOpen}
         onOpenChange={(isOpen) => handlePopUpToggle("upgradePlan", isOpen)}
-        text="Your current plan does not include access to enforce user MFA. To unlock this feature, please upgrade to Infisical Pro plan."
+        intent={{
+          ...MfaEnforcementUpgradeIntent,
+          isEnterpriseFeature: false
+        }}
       />
     </>
   );

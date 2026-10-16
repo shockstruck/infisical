@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { EventType } from "@app/ee/services/audit-log/audit-log-types";
+import { ProxiedServiceCredentialRole } from "@app/ee/services/proxied-service/proxied-service-enums";
 import {
   CredentialsArraySchema,
   hostPatternSchema,
@@ -11,15 +12,17 @@ import {
 import { ApiDocsTags, PROXIED_SERVICES } from "@app/lib/api-docs";
 import { readLimit, writeLimit } from "@app/server/config/rateLimiter";
 import { slugSchema } from "@app/server/lib/schemas";
+import { getTelemetryDistinctId } from "@app/server/lib/telemetry";
 import { verifyAuth } from "@app/server/plugins/auth/verify-auth";
 import { AuthMode } from "@app/services/auth/auth-type";
+import { PostHogEventTypes } from "@app/services/telemetry/telemetry-types";
 
 export const registerProxiedServiceRouter = async (server: FastifyZodProvider) => {
   server.route({
     method: "POST",
     url: "/",
     config: { rateLimit: writeLimit },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     schema: {
       hide: false,
       tags: [ApiDocsTags.ProxiedServices],
@@ -59,6 +62,35 @@ export const registerProxiedServiceRouter = async (server: FastifyZodProvider) =
           }
         }
       });
+
+      void server.services.telemetry
+        .sendPostHogEvents({
+          event: PostHogEventTypes.ProxiedServiceCreated,
+          distinctId: getTelemetryDistinctId(req),
+          organizationId: req.permission.orgId,
+          properties: {
+            projectId: req.body.projectId,
+            headerRewriteCount: req.body.credentials.filter(
+              (c) => c.role === ProxiedServiceCredentialRole.HeaderRewrite
+            ).length,
+            substitutionCount: req.body.credentials.filter(
+              (c) => c.role === ProxiedServiceCredentialRole.CredentialSubstitution
+            ).length,
+            substitutionSurfaces: [
+              ...new Set(
+                req.body.credentials
+                  .filter((c) => c.role === ProxiedServiceCredentialRole.CredentialSubstitution)
+                  .flatMap((c) => c.substitutionSurfaces ?? [])
+              )
+            ].sort(),
+            hostPatternCount: req.body.hostPattern.split(",").filter((p) => p.trim()).length,
+            usesDynamicSecret: req.body.credentials.some((c) => Boolean(c.dynamicSecretName)),
+            usesBasicAuth: req.body.credentials.some((c) => Boolean(c.headerPurpose)),
+            isEnabled: service.isEnabled
+          }
+        })
+        .catch(() => {});
+
       return { service };
     }
   });
@@ -67,7 +99,7 @@ export const registerProxiedServiceRouter = async (server: FastifyZodProvider) =
     method: "GET",
     url: "/",
     config: { rateLimit: readLimit },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     schema: {
       hide: false,
       tags: [ApiDocsTags.ProxiedServices],
@@ -94,7 +126,7 @@ export const registerProxiedServiceRouter = async (server: FastifyZodProvider) =
     method: "GET",
     url: "/:serviceId",
     config: { rateLimit: readLimit },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     schema: {
       hide: false,
       tags: [ApiDocsTags.ProxiedServices],
@@ -118,7 +150,7 @@ export const registerProxiedServiceRouter = async (server: FastifyZodProvider) =
     method: "GET",
     url: "/slug/:name",
     config: { rateLimit: readLimit },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     schema: {
       hide: false,
       tags: [ApiDocsTags.ProxiedServices],
@@ -155,7 +187,7 @@ export const registerProxiedServiceRouter = async (server: FastifyZodProvider) =
     method: "PATCH",
     url: "/:serviceId",
     config: { rateLimit: writeLimit },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     schema: {
       hide: false,
       tags: [ApiDocsTags.ProxiedServices],
@@ -205,7 +237,7 @@ export const registerProxiedServiceRouter = async (server: FastifyZodProvider) =
     method: "POST",
     url: "/:serviceId/report-usage",
     config: { rateLimit: writeLimit },
-    onRequest: verifyAuth([AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     schema: {
       hide: true,
       tags: [ApiDocsTags.ProxiedServices],
@@ -225,7 +257,7 @@ export const registerProxiedServiceRouter = async (server: FastifyZodProvider) =
     method: "DELETE",
     url: "/:serviceId",
     config: { rateLimit: writeLimit },
-    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
+    onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     schema: {
       hide: false,
       tags: [ApiDocsTags.ProxiedServices],

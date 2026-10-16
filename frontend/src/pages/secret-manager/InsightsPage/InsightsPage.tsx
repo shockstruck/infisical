@@ -9,8 +9,11 @@ import {
   RefreshCwIcon
 } from "lucide-react";
 
-import { UpgradePlanModal } from "@app/components/license/UpgradePlanModal";
-import { PageHeader } from "@app/components/v2";
+import {
+  SecretAccessInsightsUpgradeIntent,
+  useUpgradeGate
+} from "@app/components/license/UpgradeGate";
+import { PageHeader } from "@app/components/v3/platform";
 import {
   ProjectPermissionInsightsActions,
   ProjectPermissionSub,
@@ -22,7 +25,6 @@ import { ProjectPermissionHoneyTokenActions } from "@app/context/ProjectPermissi
 import { withProjectPermission } from "@app/hoc";
 import { ProjectType } from "@app/hooks/api/projects/types";
 import { useGetInsightsCounts } from "@app/hooks/api/secretInsights/queries";
-import { usePopUp } from "@app/hooks/usePopUp";
 
 import {
   AuditReportsCard,
@@ -38,7 +40,7 @@ export const InsightsPage = withProjectPermission(
     const { subscription } = useSubscription();
     const { currentProject, projectId } = useProject();
     const { permission } = useProjectPermission();
-    const { popUp, handlePopUpOpen, handlePopUpToggle } = usePopUp(["upgradePlan"] as const);
+    const { openUpgradeGate, upgradeGate } = useUpgradeGate();
 
     const { data: counts } = useGetInsightsCounts(
       { projectId },
@@ -47,9 +49,12 @@ export const InsightsPage = withProjectPermission(
 
     useEffect(() => {
       if (subscription && !subscription.secretAccessInsights) {
-        handlePopUpOpen("upgradePlan");
+        openUpgradeGate({
+          intent: SecretAccessInsightsUpgradeIntent,
+          paywallKey: "secret-manager.insights"
+        });
       }
-    }, [subscription]);
+    }, [openUpgradeGate, subscription]);
 
     const canReadHoneyTokens = permission.can(
       ProjectPermissionHoneyTokenActions.Read,
@@ -88,7 +93,7 @@ export const InsightsPage = withProjectPermission(
                 {
                   label: "honey tokens",
                   value: counts.honeyTokenCount,
-                  icon: <HexagonIcon className="size-3.5 text-yellow-700" />
+                  icon: <HexagonIcon className="size-3.5 text-warning" />
                 }
               ]
             : [])
@@ -140,18 +145,13 @@ export const InsightsPage = withProjectPermission(
             <AuthMethodChart />
           </div>
         </div>
-        <UpgradePlanModal
-          isOpen={popUp.upgradePlan.isOpen}
-          onOpenChange={(isOpen) => {
-            handlePopUpToggle("upgradePlan", isOpen);
-          }}
-          text="Your current plan does not include access to secret insights. To unlock this feature, please upgrade your Infisical plan."
-        />
+        {upgradeGate}
       </>
     );
   },
   {
     action: ProjectPermissionInsightsActions.Read,
-    subject: ProjectPermissionSub.Insights
+    subject: ProjectPermissionSub.Insights,
+    accessRestrictedMode: "dialog"
   }
 );

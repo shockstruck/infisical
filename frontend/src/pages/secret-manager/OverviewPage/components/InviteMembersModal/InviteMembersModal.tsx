@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { InfoIcon, SendHorizontalIcon } from "lucide-react";
@@ -6,7 +6,6 @@ import { z } from "zod";
 
 import { createNotification } from "@app/components/notifications";
 import { RoleOption } from "@app/components/roles";
-import Telemetry from "@app/components/utilities/telemetry/Telemetry";
 import {
   Button,
   Dialog,
@@ -29,15 +28,9 @@ import { emailListSchema, parseEmailList } from "@app/helpers/email";
 import { useAddUserToWsNonE2EE, useGetProjectRoles } from "@app/hooks/api";
 import { ProjectVersion } from "@app/hooks/api/projects/types";
 import { UsePopUpState } from "@app/hooks/usePopUp";
+import { analytics, AnalyticsEvent } from "@app/lib/analytics";
+import { SecretsActivationProperties } from "@app/lib/analytics/events";
 import { filterByGrantConditions, getMemberAssignRoleConditions } from "@app/lib/fn/permission";
-
-// PostHog event names for the secrets activation nudge, so we can measure the
-// shown -> invited/dismissed conversion funnel of this modal.
-const ACTIVATION_EVENTS = {
-  Viewed: "Secrets Activation Modal Viewed",
-  Invited: "Secrets Activation Modal Members Invited",
-  Dismissed: "Secrets Activation Modal Dismissed"
-} as const;
 
 const DEFAULT_PROJECT_ROLE = { slug: "member", name: "Member" };
 
@@ -54,11 +47,12 @@ const inviteMembersFormSchema = z.object({
 type TInviteMembersForm = z.infer<typeof inviteMembersFormSchema>;
 
 type Props = {
+  experimentVariant: "control" | null;
   popUp: UsePopUpState<["inviteMembers"]>;
   handlePopUpToggle: (popUpName: keyof UsePopUpState<["inviteMembers"]>, state?: boolean) => void;
 };
 
-export const InviteMembersModal = ({ popUp, handlePopUpToggle }: Props) => {
+export const InviteMembersModal = ({ popUp, handlePopUpToggle, experimentVariant }: Props) => {
   const { currentOrg } = useOrganization();
   const { currentProject } = useProject();
   const { permission: projectPermission } = useProjectPermission();
@@ -98,14 +92,25 @@ export const InviteMembersModal = ({ popUp, handlePopUpToggle }: Props) => {
 
   const { mutateAsync: addUserToProject } = useAddUserToWsNonE2EE();
 
-  const telemetry = new Telemetry().getInstance();
-  const baseEventProps = { orgId, projectId, projectType: currentProject?.type };
+  const baseEventProps: SecretsActivationProperties = {
+    projectId,
+    projectType: currentProject?.type,
+    presentation: "modal",
+    experiment_variant: experimentVariant,
+    "$feature/secrets-activation-presentation": experimentVariant
+  };
+  const hasViewedRef = useRef(false);
 
   const isOpen = popUp?.inviteMembers?.isOpen;
-  // Fire once each time the nudge surfaces. The modal opens at most once per session
-  // (see useSecretsActivationNudge), so guarding on the open state is sufficient.
   useEffect(() => {
-    if (isOpen) telemetry.capture(ACTIVATION_EVENTS.Viewed, baseEventProps);
+    if (isOpen && !hasViewedRef.current) {
+      hasViewedRef.current = true;
+      analytics.captureForOrganization(
+        AnalyticsEvent.SecretsActivationModalViewed,
+        orgId,
+        baseEventProps
+      );
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
 
@@ -121,7 +126,6 @@ export const InviteMembersModal = ({ popUp, handlePopUpToggle }: Props) => {
       return;
     }
 
-    // emails is already trimmed + lowercased by the schema; parseEmailList splits the entries.
     const usernames = parseEmailList(emails);
     if (usernames.length) {
       await addUserToProject({
@@ -133,7 +137,7 @@ export const InviteMembersModal = ({ popUp, handlePopUpToggle }: Props) => {
       });
     }
 
-    telemetry.capture(ACTIVATION_EVENTS.Invited, {
+    analytics.captureForOrganization(AnalyticsEvent.SecretsActivationModalMembersInvited, orgId, {
       ...baseEventProps,
       invitedCount: usernames.length
     });
@@ -155,7 +159,7 @@ export const InviteMembersModal = ({ popUp, handlePopUpToggle }: Props) => {
       }}
     >
       <DialogContent
-        className="overflow-visible sm:max-w-md"
+        className="sm:max-w-md"
         showCloseButton={false}
         onInteractOutside={(e) => e.preventDefault()}
         onEscapeKeyDown={(e) => e.preventDefault()}
@@ -228,7 +232,11 @@ export const InviteMembersModal = ({ popUp, handlePopUpToggle }: Props) => {
               variant="ghost"
               type="button"
               onClick={() => {
-                telemetry.capture(ACTIVATION_EVENTS.Dismissed, baseEventProps);
+                analytics.captureForOrganization(
+                  AnalyticsEvent.SecretsActivationModalDismissed,
+                  orgId,
+                  baseEventProps
+                );
                 handlePopUpToggle("inviteMembers", false);
                 reset();
               }}
