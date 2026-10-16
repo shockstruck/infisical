@@ -34,10 +34,10 @@ vi.mock("./license-fns", () => ({
   getLicenseKeyConfig: mocks.getLicenseKeyConfig
 }));
 
-const FREE_PLAN = { slug: null, identitiesUsed: 0 } as TFeatureSet;
-const ENTERPRISE_PLAN = { slug: "enterprise", identitiesUsed: 0 } as TFeatureSet;
-const V2_PLAN = { slug: "advanced", identitiesUsed: 0 } as TFeatureSet;
-const OFFLINE_PLAN = { slug: "offline-source", identitiesUsed: 0 } as TFeatureSet;
+const FREE_PLAN = { slug: null } as TFeatureSet;
+const ENTERPRISE_PLAN = { slug: "enterprise" } as TFeatureSet;
+const V2_PLAN = { slug: "advanced" } as TFeatureSet;
+const OFFLINE_PLAN = { slug: "offline-source" } as TFeatureSet;
 
 const makeService = (
   envOverrides: Record<string, string | boolean | undefined> = {},
@@ -92,7 +92,7 @@ describe("licenseServiceFactory init", () => {
     await service.init();
 
     expect(service.getInstanceType()).toBe(InstanceType.OnPrem);
-      expect(service.onPremFeatures).toStrictEqual(ENTERPRISE_PLAN);
+    expect(service.onPremFeatures).toStrictEqual(ENTERPRISE_PLAN);
     expect(mocks.getInstanceEnterpriseModeFeatures).toHaveBeenCalledOnce();
   });
 

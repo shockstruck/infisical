@@ -149,7 +149,6 @@ export const getInstanceEnterpriseModeFeatures = (): TFeatureSet => ({
   ipAllowlisting: true,
   rbac: true,
   githubOrgSync: true,
-  customRateLimits: true,
   subOrganization: true,
   customAlerts: true,
   secretAccessInsights: true,
