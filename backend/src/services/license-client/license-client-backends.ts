@@ -3,11 +3,13 @@ import jwt from "jsonwebtoken";
 import { BadRequestError, InternalServerError } from "@app/lib/errors";
 import { logger } from "@app/lib/logger";
 
+import { LICENSE_SERVER_ERROR_NAME, licenseErrorMessage, readLicenseRequestId } from "./license-client-errors";
 import {
   billingProfileResponseSchema,
   catalogResponseSchema,
   checkoutResultSchema,
   cloudPlanResponseSchema,
+  confirmTrialPaymentResultSchema,
   entitlementsResponseSchema,
   sessionResponseSchema,
   subscriptionPreviewResponseSchema,
@@ -19,6 +21,8 @@ import {
   TChangeCommitmentsPayload,
   TCheckoutResult,
   TCloudPlanResponse,
+  TConfirmTrialPaymentPayload,
+  TConfirmTrialPaymentResult,
   TCreatePortalPayload,
   TEntitlementOrg,
   TEntitlementsResponse,
@@ -33,8 +37,12 @@ import {
   TSubscriptionResponse,
   TTrialCancelResult,
   TTrialResult,
-  TTrialsResponse
+  TTrialsResponse,
+  TUpgradePayload,
+  TUpgradeResult,
+  upgradeResultSchema
 } from "./license-client-types";
+import { TLicenseTokenProvider } from "./license-token-provider";
 
 // Token-scoped paths for the self-hosted (license-key) backend: the key identifies the license, so
 // no org_id is carried. The global catalog is org-independent and shared by both backends.
@@ -78,30 +86,53 @@ const BILLING_ERROR_MESSAGES: Record<string, string> = {
   past_due: "There's an unpaid invoice on your account. Resolve payment before making changes.",
   resubscribe_cooldown: "This product was removed recently. Please wait a bit before resubscribing.",
   not_self_serve: "Billing for this organization is managed by our team. Contact sales to make changes.",
-  product_not_trialing: "Start this product's trial or activate it before setting an annual commitment."
+  product_not_trialing: "Start this product's trial or activate it before setting an annual commitment.",
+  not_an_upgrade: "This plan isn't an upgrade from your current one. Contact support to switch to it.",
+  product_not_held: "You don't have this product yet. Add it before changing its plan.",
+  product_trialing: "You're on a trial of this product. You can change plans once the trial converts.",
+  product_churned: "This product was canceled. Add it again before changing its plan.",
+  trial_already_used: "You've already trialed this plan.",
+  trial_already_open: "A trial for this product is already running.",
+  trial_not_eligible: "You're already on this plan.",
+  version_moved: "Prices changed while you were reviewing. Check the new total and try again.",
+  commitment_not_portable: "Your annual commitment can't move to that plan. Contact sales to switch.",
+  dimension_not_priced: "That plan doesn't price something you're billed for today. Contact support to switch.",
+  no_payment_method: "Add a payment method before making this change.",
+  subscription_syncing: "Your billing details are still syncing. Please try again in a moment.",
+  plan_deprecated: "This plan is being retired and is no longer available.",
+  no_trial_awaiting_payment: "There's no trial payment waiting to be completed. It may have already gone through.",
+  change_awaiting_payment:
+    "You have a payment waiting for your bank's approval. Complete it from the banner above before making another change.",
+  lock_held: "Another billing change is in progress. Please try again in a moment."
 };
 
 const throwIfResponseError = async (res: Response): Promise<void> => {
   if (res.ok) {
     return;
   }
+  const requestId = readLicenseRequestId(res);
   if (res.status >= 400 && res.status < 500) {
     const body = (await res.json().catch(() => null)) as {
-      error?: string;
       message?: string;
       details?: { code?: string };
     } | null;
     // Resolve the contract's machine code (details.code) to friendly copy so the message thrown here is
-    // user-facing; keep the code in details for any caller that still branches on it. The envelope uses
-    // `error`; older servers used `message`, so read both as the fallback.
+    // user-facing; keep the code in details for any caller that still branches on it. Otherwise fall back
+    // to the envelope's `message`, which is written for the customer (`error` is the class name).
     const code = body?.details?.code;
-    const message = (code && BILLING_ERROR_MESSAGES[code]) || body?.error || body?.message;
+    const message = (code && BILLING_ERROR_MESSAGES[code]) || body?.message;
+    logger.warn(licenseErrorMessage(requestId, `request rejected [status=${res.status}] [code=${code ?? "none"}]`));
     throw new BadRequestError({
-      message,
+      name: LICENSE_SERVER_ERROR_NAME,
+      message: licenseErrorMessage(requestId, message ?? "Billing request failed"),
       details: code ? { code } : undefined
     });
   }
-  throw new InternalServerError({ message: "Billing service error" });
+  logger.error(licenseErrorMessage(requestId, `request failed [status=${res.status}]`));
+  throw new InternalServerError({
+    name: LICENSE_SERVER_ERROR_NAME,
+    message: licenseErrorMessage(requestId, "Billing service error")
+  });
 };
 
 export const licenseServerBackend = (
@@ -162,7 +193,10 @@ export const licenseServerBackend = (
     if (!parsed.success) {
       // A schema mismatch must NOT be silently read as "no subscription" — that hides a real (often
       // paid) subscription behind the free state. Log it so contract drift is visible, then degrade.
-      logger.error({ err: parsed.error }, `license-client: /subscription failed schema validation [orgId=${orgId}]`);
+      logger.error(
+        { err: parsed.error },
+        licenseErrorMessage(readLicenseRequestId(res), `/subscription failed schema validation [orgId=${orgId}]`)
+      );
       return null;
     }
     if (!parsed.data.status) {
@@ -212,7 +246,7 @@ export const licenseServerBackend = (
     const res = await fetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${mintServiceToken(signingKey)}`, "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, region }),
       redirect: "manual"
     });
     await throwIfResponseError(res);
@@ -262,6 +296,21 @@ export const licenseServerBackend = (
     return checkoutResultSchema.parse(body);
   },
 
+  // Move a held product onto a higher plan in place. expectedPlanVersionId is the version the preview
+  // priced; prorationDate is a staleness check the server rejects when older than 15 minutes.
+  upgradeProduct: async (orgId: string, payload: TUpgradePayload): Promise<TUpgradeResult> => {
+    const url = new URL(orgScoped(orgId, "/subscription/upgrade"), serverUrl);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${mintServiceToken(signingKey)}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      redirect: "manual"
+    });
+    await throwIfResponseError(res);
+    const body: unknown = await res.json();
+    return upgradeResultSchema.parse(body);
+  },
+
   // Start / change annual commitments across dimensions, all-or-nothing. The license server prices at
   // its current time; no client-supplied proration instant is forwarded.
   changeCommitments: async (orgId: string, payload: TChangeCommitmentsPayload): Promise<TCheckoutResult> => {
@@ -269,7 +318,7 @@ export const licenseServerBackend = (
     const res = await fetch(url, {
       method: "PUT",
       headers: { Authorization: `Bearer ${mintServiceToken(signingKey)}`, "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, region }),
       redirect: "manual"
     });
     await throwIfResponseError(res);
@@ -288,7 +337,8 @@ export const licenseServerBackend = (
         email: payload.email,
         name: payload.name,
         declaredUsage: payload.declaredUsage,
-        returnUrl: payload.returnUrl
+        returnUrl: payload.returnUrl,
+        region
       }),
       redirect: "manual"
     });
@@ -312,6 +362,22 @@ export const licenseServerBackend = (
     await throwIfResponseError(res);
     const body: unknown = await res.json();
     return trialCancelResultSchema.parse(body);
+  },
+
+  confirmTrialPayment: async (
+    orgId: string,
+    payload: TConfirmTrialPaymentPayload
+  ): Promise<TConfirmTrialPaymentResult> => {
+    const url = new URL(orgScoped(orgId, "/subscription/trials/confirm-payment"), serverUrl);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${mintServiceToken(signingKey)}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ returnUrl: payload.returnUrl }),
+      redirect: "manual"
+    });
+    await throwIfResponseError(res);
+    const body: unknown = await res.json();
+    return confirmTrialPaymentResultSchema.parse(body);
   },
 
   // The org's trial history. 404 (org has no license yet) degrades to an empty history.
@@ -358,79 +424,90 @@ export const licenseServerBackend = (
 // Stripe-backed billing (checkout, portal, subscription mutations, cloud plan, billing profile) does
 // not exist for self-hosted licenses; the license is managed out-of-band. These reject so a caller
 // never silently no-ops.
+// No request is made, so there is no license request id to carry — only the shared prefix.
 const notSupportedOnSelfHosted = (operation: string) => (): Promise<never> =>
-  Promise.reject(new Error(`license operation "${operation}" is not supported for self-hosted licenses`));
+  Promise.reject(new Error(`license-client: operation "${operation}" is not supported for self-hosted licenses`));
 
-// Backend for a self-hosted License Server v2 license. Unlike the cloud backend it authenticates with
-// the raw license key as a bearer token (not a minted RS256 service JWT) and is single-tenant: the key
+// Backend for a self-hosted License Server v2 license. Unlike the cloud backend (which mints an RS256
+// service JWT), it exchanges the license key for a short-lived JWT at the token endpoint and sends that
+// as the bearer — the same convention both self-hosted key formats now follow. Single-tenant: the key
 // identifies the license, so entitlement/subscription reads carry no org_id. Only the read + usage +
 // refresh endpoints the self-hosted contract exposes are implemented; everything billing-related throws.
 export const licenseServerSelfHostedBackend = (
   serverUrl: string,
-  licenseKey: string,
+  tokenProvider: TLicenseTokenProvider,
   region?: string
-): TLicenseClientBackend => ({
-  fetchEntitlements: async (): Promise<TEntitlementsResponse> => {
-    const url = new URL(ENTITLEMENTS_PATH, serverUrl);
-    if (region) {
-      url.searchParams.set("region", region);
+): TLicenseClientBackend => {
+  // GET with the exchanged JWT; on a 401 (token expired mid-flight) drop the cache and retry once.
+  const authedGet = async (url: URL): Promise<Response> => {
+    const send = async () =>
+      fetch(url, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${await tokenProvider.getToken()}` },
+        redirect: "manual"
+      });
+    const res = await send();
+    if (res.status !== 401) {
+      return res;
     }
-    const res = await fetch(url, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${licenseKey}` },
-      redirect: "manual"
-    });
-    await throwIfResponseError(res);
-    const body: unknown = await res.json();
-    return entitlementsResponseSchema.parse(body);
-  },
+    tokenProvider.invalidate();
+    return send();
+  };
 
-  fetchCatalog: async (): Promise<TCatalogResponse> => {
-    const url = new URL(PRODUCTS_PATH, serverUrl);
-    const res = await fetch(url, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${licenseKey}` },
-      redirect: "manual"
-    });
-    await throwIfResponseError(res);
-    const body: unknown = await res.json();
-    return catalogResponseSchema.parse(body);
-  },
+  return {
+    fetchEntitlements: async (): Promise<TEntitlementsResponse> => {
+      const url = new URL(ENTITLEMENTS_PATH, serverUrl);
+      if (region) {
+        url.searchParams.set("region", region);
+      }
+      const res = await authedGet(url);
+      await throwIfResponseError(res);
+      const body: unknown = await res.json();
+      return entitlementsResponseSchema.parse(body);
+    },
 
-  // The license's subscription/contract view. A 404 (no contract yet) degrades to "no subscription".
-  fetchSubscription: async (): Promise<TSubscriptionResponse | null> => {
-    const url = new URL(SUBSCRIPTION_PATH, serverUrl);
-    const res = await fetch(url, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${licenseKey}` },
-      redirect: "manual"
-    });
-    if (res.status === 404) {
-      return null;
-    }
-    await throwIfResponseError(res);
-    const body: unknown = await res.json();
-    const parsed = subscriptionResponseSchema.safeParse(body);
-    if (!parsed.success) {
-      logger.error({ err: parsed.error }, "license-client: /subscription failed schema validation (self-hosted)");
-      return null;
-    }
-    if (!parsed.data.status) {
-      return null;
-    }
-    return parsed.data;
-  },
+    fetchCatalog: async (): Promise<TCatalogResponse> => {
+      const res = await authedGet(new URL(PRODUCTS_PATH, serverUrl));
+      await throwIfResponseError(res);
+      const body: unknown = await res.json();
+      return catalogResponseSchema.parse(body);
+    },
 
-  fetchCloudPlan: notSupportedOnSelfHosted("fetchCloudPlan"),
-  fetchBillingProfile: notSupportedOnSelfHosted("fetchBillingProfile"),
-  createPortalSession: notSupportedOnSelfHosted("createPortalSession"),
-  previewSubscriptionChange: notSupportedOnSelfHosted("previewSubscriptionChange"),
-  buyProduct: notSupportedOnSelfHosted("buyProduct"),
-  removeProduct: notSupportedOnSelfHosted("removeProduct"),
-  changeCommitments: notSupportedOnSelfHosted("changeCommitments"),
-  startTrial: notSupportedOnSelfHosted("startTrial"),
-  cancelTrial: notSupportedOnSelfHosted("cancelTrial"),
-  fetchTrials: notSupportedOnSelfHosted("fetchTrials"),
-  cancelSubscription: notSupportedOnSelfHosted("cancelSubscription"),
-  resumeSubscription: notSupportedOnSelfHosted("resumeSubscription")
-});
+    // The license's subscription/contract view. A 404 (no contract yet) degrades to "no subscription".
+    fetchSubscription: async (): Promise<TSubscriptionResponse | null> => {
+      const res = await authedGet(new URL(SUBSCRIPTION_PATH, serverUrl));
+      if (res.status === 404) {
+        return null;
+      }
+      await throwIfResponseError(res);
+      const body: unknown = await res.json();
+      const parsed = subscriptionResponseSchema.safeParse(body);
+      if (!parsed.success) {
+        logger.error(
+          { err: parsed.error },
+          licenseErrorMessage(readLicenseRequestId(res), "/subscription failed schema validation (self-hosted)")
+        );
+        return null;
+      }
+      if (!parsed.data.status) {
+        return null;
+      }
+      return parsed.data;
+    },
+
+    fetchCloudPlan: notSupportedOnSelfHosted("fetchCloudPlan"),
+    fetchBillingProfile: notSupportedOnSelfHosted("fetchBillingProfile"),
+    createPortalSession: notSupportedOnSelfHosted("createPortalSession"),
+    previewSubscriptionChange: notSupportedOnSelfHosted("previewSubscriptionChange"),
+    buyProduct: notSupportedOnSelfHosted("buyProduct"),
+    removeProduct: notSupportedOnSelfHosted("removeProduct"),
+    upgradeProduct: notSupportedOnSelfHosted("upgradeProduct"),
+    changeCommitments: notSupportedOnSelfHosted("changeCommitments"),
+    startTrial: notSupportedOnSelfHosted("startTrial"),
+    cancelTrial: notSupportedOnSelfHosted("cancelTrial"),
+    confirmTrialPayment: notSupportedOnSelfHosted("confirmTrialPayment"),
+    fetchTrials: notSupportedOnSelfHosted("fetchTrials"),
+    cancelSubscription: notSupportedOnSelfHosted("cancelSubscription"),
+    resumeSubscription: notSupportedOnSelfHosted("resumeSubscription")
+  };
+};

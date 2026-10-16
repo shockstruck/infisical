@@ -13,6 +13,7 @@ import {
   AccessPamRequestBypassedTemplate,
   AccessPamRequestTemplate,
   AccountDeletionConfirmationTemplate,
+  AlertNotificationTemplate,
   AuditLogMigrationAlertTemplate,
   AuditReportTemplate,
   CredentialRotationFailedTemplate,
@@ -26,13 +27,17 @@ import {
   HealthAlertTemplate,
   HoneyTokenTriggeredTemplate,
   IntegrationSyncFailedTemplate,
+  LegacyPkiDeprecationTemplate,
   MfaRecoveryCodeUsedTemplate,
+  NativeIntegrationDeprecationOrgAdminTemplate,
+  NativeIntegrationDeprecationProjectAdminTemplate,
   NewDeviceLoginTemplate,
   OAuthPasswordResetTemplate,
   OrgAdminBreakglassAccessTemplate,
   OrgAdminProjectFolderGrantAccessTemplate,
   OrganizationAssignmentTemplate,
   OrganizationInvitationTemplate,
+  PamFolderAdminAccessTemplate,
   PasswordResetTemplate,
   PasswordSetupTemplate,
   PkiApprovalRequestNeedsReviewTemplate,
@@ -92,6 +97,9 @@ export enum SmtpTemplates {
   SecretApprovalRequestNeedsReview = "secretApprovalRequestNeedsReview",
   // HistoricalSecretList = "historicalSecretLeakIncident", not used anymore?
   NewDeviceJoin = "newDevice",
+  LegacyPkiDeprecation = "legacyPkiDeprecation",
+  NativeIntegrationDeprecationOrgAdmin = "nativeIntegrationDeprecationOrgAdmin",
+  NativeIntegrationDeprecationProjectAdmin = "nativeIntegrationDeprecationProjectAdmin",
   OrgInvite = "organizationInvitation",
   SubOrgInvite = "subOrganizationInvitation",
   OrgAssignment = "organizationAssignment",
@@ -112,6 +120,7 @@ export enum SmtpTemplates {
   SecretRotationFailed = "secretRotationFailed",
   ProjectAccessRequest = "projectAccess",
   OrgAdminProjectDirectAccess = "orgAdminProjectFolderGrantAccess",
+  PamFolderAdminAccess = "pamFolderAdminAccess",
   OrgAdminBreakglassAccess = "orgAdminBreakglassAccess",
   ServiceTokenExpired = "serviceTokenExpired",
   SecretScanningV2ScanFailed = "secretScanningV2ScanFailed",
@@ -122,7 +131,8 @@ export enum SmtpTemplates {
   CredentialRotationFailed = "credentialRotationFailed",
   AuditLogMigrationAlert = "auditLogMigrationAlert",
   HoneyTokenTriggered = "honeyTokenTriggered",
-  AuditReport = "auditReport"
+  AuditReport = "auditReport",
+  AlertNotification = "alertNotification"
 }
 
 export enum SmtpHost {
@@ -140,6 +150,9 @@ const EmailTemplateMap: Record<SmtpTemplates, React.FC<any>> = {
   [SmtpTemplates.SubOrgInvite]: SubOrganizationInvitationTemplate,
   [SmtpTemplates.OrgAssignment]: OrganizationAssignmentTemplate,
   [SmtpTemplates.NewDeviceJoin]: NewDeviceLoginTemplate,
+  [SmtpTemplates.LegacyPkiDeprecation]: LegacyPkiDeprecationTemplate,
+  [SmtpTemplates.NativeIntegrationDeprecationOrgAdmin]: NativeIntegrationDeprecationOrgAdminTemplate,
+  [SmtpTemplates.NativeIntegrationDeprecationProjectAdmin]: NativeIntegrationDeprecationProjectAdminTemplate,
   [SmtpTemplates.SignupEmailVerification]: SignupEmailVerificationTemplate,
   [SmtpTemplates.SignupExistingAccount]: SignupExistingAccountTemplate,
   [SmtpTemplates.EmailMfa]: EmailMfaTemplate,
@@ -169,6 +182,7 @@ const EmailTemplateMap: Record<SmtpTemplates, React.FC<any>> = {
   [SmtpTemplates.SecretRotationFailed]: SecretRotationFailedTemplate,
   [SmtpTemplates.SecretSyncFailed]: SecretSyncFailedTemplate,
   [SmtpTemplates.OrgAdminProjectDirectAccess]: OrgAdminProjectFolderGrantAccessTemplate,
+  [SmtpTemplates.PamFolderAdminAccess]: PamFolderAdminAccessTemplate,
   [SmtpTemplates.ProjectAccessRequest]: ProjectAccessRequestTemplate,
   [SmtpTemplates.SecretApprovalRequestNeedsReview]: SecretApprovalRequestNeedsReviewTemplate,
   [SmtpTemplates.OAuthPasswordReset]: OAuthPasswordResetTemplate,
@@ -183,7 +197,8 @@ const EmailTemplateMap: Record<SmtpTemplates, React.FC<any>> = {
   [SmtpTemplates.CredentialRotationFailed]: CredentialRotationFailedTemplate,
   [SmtpTemplates.AuditLogMigrationAlert]: AuditLogMigrationAlertTemplate,
   [SmtpTemplates.HoneyTokenTriggered]: HoneyTokenTriggeredTemplate,
-  [SmtpTemplates.AuditReport]: AuditReportTemplate
+  [SmtpTemplates.AuditReport]: AuditReportTemplate,
+  [SmtpTemplates.AlertNotification]: AlertNotificationTemplate
 };
 
 export const smtpServiceFactory = (cfg: TSmtpConfig) => {

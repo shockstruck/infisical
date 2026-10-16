@@ -90,14 +90,15 @@ export const EnterPasswordStep = ({ verificationToken, onComplete, onBack }: Pro
       onSubmit={handleSubmit(handlePasswordReset)}
       className="mx-auto flex w-full max-w-md flex-col items-center justify-center gap-y-4"
     >
-      <h1 className="bg-gradient-to-b from-white to-bunker-200 bg-clip-text text-center text-xl font-medium text-transparent">
+      <h1 className="bg-gradient-to-b from-foreground-inverse to-foreground-soft bg-clip-text text-center text-xl font-normal text-transparent">
         Enter new password
       </h1>
-      <p className="w-max justify-center text-center text-sm text-gray-400">
+      <p className="w-max justify-center text-center text-sm text-muted-cool">
         Make sure you save it somewhere safe.
       </p>
       <div className="mt-8 w-full">
         <PasswordField
+          variant="outlined"
           id="account-recovery-password"
           value={password}
           policy={config.passwordPolicy}
@@ -114,7 +115,7 @@ export const EnterPasswordStep = ({ verificationToken, onComplete, onBack }: Pro
       >
         <Field data-invalid={showDangerState && Boolean(errors.confirmPassword)}>
           <FieldLabel htmlFor="account-recovery-confirm-password">Confirm Password</FieldLabel>
-          <InputGroup>
+          <InputGroup variant="outlined">
             <InputGroupInput
               {...register("confirmPassword")}
               id="account-recovery-confirm-password"
@@ -160,7 +161,7 @@ export const EnterPasswordStep = ({ verificationToken, onComplete, onBack }: Pro
         Change Password
       </Button>
       <div>
-        <Button type="button" variant="ghost" className="mt-6 text-mineshaft-300" onClick={onBack}>
+        <Button type="button" variant="ghost" className="mt-6 text-label" onClick={onBack}>
           <ChevronLeft className="mr-2 h-4 w-4" />
           <span className="text-sm">Back to recovery options</span>
         </Button>

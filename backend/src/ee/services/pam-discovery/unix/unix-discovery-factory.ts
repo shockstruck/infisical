@@ -8,6 +8,7 @@ import { logger } from "@app/lib/logger";
 
 import { PamAccountType, PamSshAuthMethod } from "../../pam/pam-enums";
 import { sshExecWithGateway, sweepReachableTargets } from "../pam-discovery-fns";
+import { expandTargets } from "../pam-discovery-targets";
 import {
   TDiscoveredAccount,
   TDiscoveryCredentialAccount,
@@ -15,7 +16,6 @@ import {
   TDiscoveryScanResult,
   TPamDiscoveryFactory
 } from "../pam-discovery-types";
-import { expandTargets } from "./unix-discovery-fns";
 
 const SSH_EXEC_TIMEOUT_MS = 20 * 1000;
 const SCAN_CONCURRENCY = 64;
@@ -189,7 +189,8 @@ export const unixDiscoveryFactory: TPamDiscoveryFactory = ({
       accounts: discovered.slice(0, MAX_ACCOUNTS_PER_SCAN),
       machineErrors: results.flatMap((r) => (r.error ? [r.error] : [])),
       dependencies: [],
-      scannedDependencyMachines: []
+      scannedDependencyMachines: [],
+      scannedAccountMachines: []
     };
   };
 

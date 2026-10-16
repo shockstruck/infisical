@@ -11,7 +11,9 @@ export enum SessionEndReason {
   SetupFailed = "Failed to establish connection",
   IdleTimeout = "Session closed due to inactivity",
   SessionLimitReached = "Maximum concurrent sessions reached",
-  ApprovalRevoked = "Your approved access is no longer active"
+  ApprovalRevoked = "Your approved access is no longer active",
+  Terminated = "This session was terminated",
+  ReplyTooLarge = "The reply was too large to read safely. Use the Infisical CLI for data this size"
 }
 
 export enum TerminalServerMessageType {
@@ -65,6 +67,8 @@ export type TIssueWebSocketTicketDTO = {
   actor: ProjectServiceActor;
   actorEmail: string;
   actorName: string;
+  tokenVersionId: string;
+  accessVersion: number;
   auditLogInfo: AuditLogInfo;
   reason?: string;
   mfaSessionId?: string;

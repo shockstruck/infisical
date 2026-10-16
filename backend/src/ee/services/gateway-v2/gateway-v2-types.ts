@@ -1,11 +1,13 @@
 export type TGatewayV2ConnectionDetails = {
-  relayHost: string;
+  gatewayId: string;
+  directAddress?: string;
+  relayHost?: string;
   gateway: {
     clientCertificate: string;
     clientPrivateKey: string;
     serverCertificateChain: string;
   };
-  relay: {
+  relay?: {
     clientCertificate: string;
     clientPrivateKey: string;
     serverCertificateChain: string;
@@ -35,13 +37,6 @@ export type TGatewayConnectedKubernetesAuth = {
   identityName: string;
 };
 
-export type TGatewayConnectedMcpServer = {
-  id: string;
-  name: string;
-  projectId: string;
-  projectName?: string;
-};
-
 export type TGatewayConnectedPkiDiscoveryConfig = {
   id: string;
   name: string;
@@ -49,10 +44,24 @@ export type TGatewayConnectedPkiDiscoveryConfig = {
   projectName?: string;
 };
 
+export type TGatewayConnectedPamAccount = {
+  id: string;
+  name: string;
+  accountType: string;
+  folderName: string | null;
+};
+
+export type TGatewayConnectedPamAccountTemplate = {
+  id: string;
+  name: string;
+  type: string;
+};
+
 export type TGatewayConnectedResources = {
   appConnections: TGatewayConnectedAppConnection[];
   dynamicSecrets: TGatewayConnectedDynamicSecret[];
   kubernetesAuths: TGatewayConnectedKubernetesAuth[];
-  mcpServers: TGatewayConnectedMcpServer[];
   pkiDiscoveryConfigs: TGatewayConnectedPkiDiscoveryConfig[];
+  pamAccounts: TGatewayConnectedPamAccount[];
+  pamAccountTemplates: TGatewayConnectedPamAccountTemplate[];
 };

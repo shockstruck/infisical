@@ -94,7 +94,7 @@ export const LoginLdapPage = () => {
               >
                 <ChevronLeft />
               </IconButton>
-              <CardTitle className="ml-0.5 bg-linear-to-b from-white to-bunker-200 bg-clip-text font-alliance text-2xl font-normal text-transparent">
+              <CardTitle className="ml-0.5 bg-linear-to-b from-foreground-inverse to-foreground-soft bg-clip-text font-alliance text-2xl font-normal text-transparent">
                 LDAP Login
               </CardTitle>
             </div>
@@ -102,6 +102,7 @@ export const LoginLdapPage = () => {
           <CardContent className="flex flex-col gap-4">
             {!config.defaultAuthOrgSlug && !passedOrgSlug && (
               <Input
+                variant="outlined"
                 value={organizationSlug}
                 onChange={(e) => setOrganizationSlug(e.target.value)}
                 type="text"
@@ -111,15 +112,18 @@ export const LoginLdapPage = () => {
               />
             )}
             <Input
+              variant="outlined"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               type="text"
+              autoComplete="username"
               placeholder="Enter your LDAP username..."
               required
               disabled={passedUsername !== undefined}
               className="h-10"
             />
             <Input
+              variant="outlined"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               type="password"

@@ -1,19 +1,37 @@
-import { CertPolicyState } from "@app/pages/cert-manager/PoliciesPage/components/CertificatePoliciesTab/shared/certificate-constants";
+import {
+  CertExtensionCriticality,
+  CertPolicyState
+} from "@app/pages/cert-manager/PoliciesPage/components/CertificatePoliciesTab/shared/certificate-constants";
+
+/**
+ * A domain_component rule's values are comma-joined ordered sequences ("corp,example,com"), one per
+ * entry. Every other attribute type takes plain patterns.
+ */
+export type TSubjectRule = {
+  type:
+    | "common_name"
+    | "organization"
+    | "country"
+    | "state"
+    | "locality"
+    | "organizational_unit"
+    | "domain_component";
+  allowed?: string[];
+  required?: string[];
+  denied?: string[];
+};
+
+export type TCustomExtensionRule = {
+  oid: string;
+  label?: string;
+  critical?: CertExtensionCriticality;
+  allowed?: string[];
+  required?: string[];
+  denied?: string[];
+};
 
 export type TCertificatePolicyRule = {
-  subject?: Array<{
-    type:
-      | "common_name"
-      | "organization"
-      | "country"
-      | "state"
-      | "locality"
-      | "organizational_unit"
-      | "domain_component";
-    allowed?: string[];
-    required?: string[];
-    denied?: string[];
-  }>;
+  subject?: TSubjectRule[];
   sans?: Array<{
     type: "dns_name" | "ip_address" | "email" | "uri" | "upn";
     allowed?: string[];
@@ -58,6 +76,7 @@ export type TCertificatePolicyRule = {
     max?: string;
   };
   basicConstraints?: TBasicConstraints;
+  customExtensions?: TCustomExtensionRule[];
 };
 
 export type TBasicConstraintsIsCAPolicy = CertPolicyState;
@@ -81,6 +100,7 @@ export type TCertificatePolicy = {
   createdAt: string;
   updatedAt: string;
   basicConstraints?: TBasicConstraints | null;
+  customExtensions?: TCustomExtensionRule[] | null;
 };
 
 export type TCreateCertificatePolicyDTO = {
@@ -94,6 +114,7 @@ export type TCreateCertificatePolicyDTO = {
   algorithms?: TCertificatePolicyRule["algorithms"] | null;
   validity?: TCertificatePolicyRule["validity"] | null;
   basicConstraints?: TBasicConstraints | null;
+  customExtensions?: TCustomExtensionRule[] | null;
 };
 
 export type TUpdateCertificatePolicyDTO = {
@@ -107,6 +128,7 @@ export type TUpdateCertificatePolicyDTO = {
   algorithms?: TCertificatePolicyRule["algorithms"] | null;
   validity?: TCertificatePolicyRule["validity"] | null;
   basicConstraints?: TBasicConstraints | null;
+  customExtensions?: TCustomExtensionRule[] | null;
 };
 
 export type TDeleteCertificatePolicyDTO = {

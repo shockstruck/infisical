@@ -170,7 +170,7 @@ export const signerIssuanceServiceFactory = ({
     const ca = await certificateAuthorityDAL.findByIdWithAssociatedCa(input.caId);
     if (!ca || ca.projectId !== input.projectId) {
       throw new BadRequestError({
-        message: `Certificate authority '${input.caId}' is not in this project.`
+        message: `Certificate authority '${input.caId}' is not in this organization.`
       });
     }
     if (ca.status !== CaStatus.ACTIVE) {
@@ -549,6 +549,7 @@ export const signerIssuanceServiceFactory = ({
         extendedKeyUsages: [CertExtendedKeyUsage.CODE_SIGNING],
         validity: { ttl: `${job.certificateTtlDays}d` },
         keyAlgorithm: job.keyAlgorithm as CertKeyAlgorithm,
+        csr,
         isRenewal: false,
         isCancelled: async () => false
       });
@@ -591,6 +592,7 @@ export const signerIssuanceServiceFactory = ({
     } else {
       const awsResult = await awsPcaFns.orderCertificate({
         caId: job.caId,
+        idempotencyKey: job.id,
         commonName: job.commonName,
         altNames: [],
         keyUsages: [CertKeyUsage.DIGITAL_SIGNATURE, CertKeyUsage.KEY_ENCIPHERMENT],

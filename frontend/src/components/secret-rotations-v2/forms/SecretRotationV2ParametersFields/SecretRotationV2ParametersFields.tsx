@@ -6,12 +6,15 @@ import { TSecretRotationV2Form } from "../schemas";
 import { Auth0ClientSecretRotationParametersFields } from "./Auth0ClientSecretRotationParametersFields";
 import { AwsIamUserSecretRotationParametersFields } from "./AwsIamUserSecretRotationParametersFields";
 import { AzureClientSecretRotationParametersFields } from "./AzureClientSecretRotationParametersFields";
+import { CloudflareApiTokenRotationParametersFields } from "./CloudflareApiTokenRotationParametersFields";
+import { CloudflareR2AccessKeyRotationParametersFields } from "./CloudflareR2AccessKeyRotationParametersFields";
 import { ConvexAccessKeyRotationParametersFields } from "./ConvexAccessKeyRotationParametersFields";
 import { DatabricksServicePrincipalSecretRotationParametersFields } from "./DatabricksServicePrincipalSecretRotationParametersFields";
 import { DatadogApiKeyRotationParametersFields } from "./DatadogApiKeyRotationParametersFields";
 import { DatadogApplicationKeySecretRotationParametersFields } from "./DatadogApplicationKeySecretRotationParametersFields";
 import { DbtServiceTokenRotationParametersFields } from "./DbtServiceTokenRotationParametersFields";
 import { FireworksApiKeyRotationParametersFields } from "./FireworksApiKeyRotationParametersFields";
+import { GcpServiceAccountKeyRotationParametersFields } from "./GcpServiceAccountKeyRotationParametersFields";
 import { HpIloRotationParametersFields } from "./HpIloRotationParametersFields";
 import { LdapPasswordRotationParametersFields } from "./LdapPasswordRotationParametersFields";
 import { LiteLLMApiKeyRotationParametersFields } from "./LiteLLMApiKeyRotationParametersFields";
@@ -23,6 +26,7 @@ import { RedisCredentialsRotationParametersFields } from "./RedisCredentialsRota
 import { SalesforceOauthCredentialsRotationParametersFields } from "./SalesforceOauthCredentialsRotationParametersFields";
 import { SqlCredentialsRotationParametersFields } from "./shared";
 import { SnowflakeUserKeyPairRotationParametersFields } from "./SnowflakeUserKeyPairRotationParametersFields";
+import { StripeApiKeyRotationParametersFields } from "./StripeApiKeyRotationParametersFields";
 import { SupabaseApiKeyRotationParametersFields } from "./SupabaseApiKeyRotationParametersFields";
 import { UnixLinuxLocalAccountRotationParametersFields } from "./UnixLinuxLocalAccountRotationParametersFields";
 import { WindowsLocalAccountRotationParametersFields } from "./WindowsLocalAccountRotationParametersFields";
@@ -54,7 +58,11 @@ const COMPONENT_MAP: Record<SecretRotation, React.FC> = {
   [SecretRotation.DatadogApiKey]: DatadogApiKeyRotationParametersFields,
   [SecretRotation.ConvexAccessKey]: ConvexAccessKeyRotationParametersFields,
   [SecretRotation.FireworksApiKey]: FireworksApiKeyRotationParametersFields,
-  [SecretRotation.SnowflakeUserKeyPair]: SnowflakeUserKeyPairRotationParametersFields
+  [SecretRotation.SnowflakeUserKeyPair]: SnowflakeUserKeyPairRotationParametersFields,
+  [SecretRotation.CloudflareApiToken]: CloudflareApiTokenRotationParametersFields,
+  [SecretRotation.CloudflareR2AccessKey]: CloudflareR2AccessKeyRotationParametersFields,
+  [SecretRotation.StripeApiKey]: StripeApiKeyRotationParametersFields,
+  [SecretRotation.GcpServiceAccountKey]: GcpServiceAccountKeyRotationParametersFields
 };
 
 export const SecretRotationV2ParametersFields = () => {
@@ -65,11 +73,8 @@ export const SecretRotationV2ParametersFields = () => {
   const Component = COMPONENT_MAP[rotationType];
 
   return (
-    <>
-      <p className="mb-4 text-sm text-bunker-300">
-        Configure the required parameters for this Secret Rotation.
-      </p>
+    <div className="space-y-4">
       <Component />
-    </>
+    </div>
   );
 };

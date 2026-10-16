@@ -27,11 +27,13 @@ import {
   ResetUserPasswordV2DTO,
   SendMfaTokenDTO,
   SetupPasswordDTO,
+  SignupOnboardingDTO,
   TOauthTokenExchangeDTO,
   UserAgentType,
   VerifyMfaTokenDTO,
   VerifyMfaTokenRes,
-  VerifySignupInviteDTO
+  VerifySignupInviteDTO,
+  VerifySignupInviteRes
 } from "./types";
 
 export const authKeys = {
@@ -146,6 +148,12 @@ export const useCompleteAccountSignup = () => {
   });
 };
 
+/** Fire-and-forget onboarding telemetry; callers must never block the signup flow on it. */
+export const submitSignupOnboarding = async (details: SignupOnboardingDTO) => {
+  const { data } = await apiRequest.post("/api/v3/signup/onboarding", details);
+  return data;
+};
+
 export const useSendMfaToken = () => {
   return useMutation<object, object, SendMfaTokenDTO>({
     mutationFn: async ({ email }) => {
@@ -193,16 +201,19 @@ export const verifyRecoveryCode = async (recoveryCode: string) => {
 };
 
 export const verifySignupInvite = async (details: VerifySignupInviteDTO) => {
-  const { data } = await apiRequest.post("/api/v1/invite-org/verify", details);
+  const { data } = await apiRequest.post<VerifySignupInviteRes>(
+    "/api/v1/invite-org/verify",
+    details
+  );
   return data;
 };
 
 export const useSendVerificationEmail = () => {
   return useMutation({
-    mutationFn: async ({ email }: { email: string }) => {
+    mutationFn: async ({ email, captchaToken }: { email: string; captchaToken?: string }) => {
       const { data } = await apiRequest.post<{ message: string; cooldownSeconds: number }>(
         "/api/v3/signup/email/signup",
-        { email }
+        { email, captchaToken }
       );
 
       return data;

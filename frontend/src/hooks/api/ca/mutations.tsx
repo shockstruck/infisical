@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { apiRequest } from "@app/config/request";
 
+import { certificateProfileKeys } from "../certificateProfiles/queries";
 import { projectKeys } from "../projects";
 import { CaRenewalStatus, CaType } from "./enums";
 import { caKeys } from "./queries";
@@ -72,6 +73,10 @@ export const useCreateCa = () => {
       queryClient.invalidateQueries({
         queryKey: caKeys.listExternalCasByProjectId()
       });
+      // Both caps count every CA type, so creating or deleting either kind moves the quota.
+      queryClient.invalidateQueries({
+        queryKey: caKeys.getCaQuota()
+      });
     }
   });
 };
@@ -94,6 +99,9 @@ export const useDeleteCa = () => {
       });
       queryClient.invalidateQueries({
         queryKey: caKeys.listExternalCasByProjectId()
+      });
+      queryClient.invalidateQueries({
+        queryKey: caKeys.getCaQuota()
       });
     }
   });
@@ -174,7 +182,7 @@ export const useCreateCertificateV3 = () => {
       });
 
       queryClient.invalidateQueries({
-        queryKey: ["certificate-profiles"]
+        queryKey: certificateProfileKeys.all
       });
     }
   });

@@ -8,7 +8,7 @@ import { Play, Radar, Search, TriangleAlert } from "lucide-react";
 import { z } from "zod";
 
 import { createNotification } from "@app/components/notifications";
-import { HighlightText } from "@app/components/v2/HighlightText";
+import { HighlightText } from "@app/components/utilities/HighlightText";
 import {
   Badge,
   Button,
@@ -30,6 +30,7 @@ import {
   InputGroupAddon,
   InputGroupInput,
   Pagination,
+  ProviderIcon,
   Table,
   TableBody,
   TableCell,
@@ -56,6 +57,7 @@ import {
   useListPamDiscoveryRuns,
   useListPamDiscoverySources,
   useListPamDiscoveryTypes,
+  useListPamStaleAccounts,
   usePamAccountTypeMap,
   useTriggerPamDiscoveryScan,
   useUpdatePamDiscoverySource
@@ -68,18 +70,21 @@ import { PAM_DISCOVERY_TABS } from "../../components/pamResourceTabs";
 import { SheetSaveBar } from "../../components/SheetSaveBar";
 import {
   buildDiscoveryConfiguration,
-  buildUnixDiscoveryConfiguration,
+  buildHostRangeDiscoveryConfiguration,
   CredentialAccountField,
+  CredentialAccountsField,
   DiscoveryConfigFields,
   discoveryConfigFormShape,
   discoveryConfigFromSource,
+  HOST_RANGE_SOURCES,
+  HostRangeDiscoveryConfigFields,
+  hostRangeDiscoveryConfigFormShape,
+  hostRangeDiscoveryConfigFromSource,
+  isHostRangeDiscoveryType,
   ScheduleField,
-  SshCredentialAccountsField,
   TDiscoveryConfigFields,
-  TUnixDiscoveryConfigFields,
-  UnixDiscoveryConfigFields,
-  unixDiscoveryConfigFormShape,
-  unixDiscoveryConfigFromSource
+  THostRangeDiscoveryConfigFields,
+  THostRangeDiscoveryType
 } from "./DiscoveryConfigFields";
 import { DiscoveryStatusBadge } from "./DiscoveryStatusBadge";
 import { ImportDiscoveredModal } from "./ImportDiscoveredModal";
@@ -102,7 +107,12 @@ const NameField = ({ control }: { control: Control<{ name: string }> }) => (
       <Field>
         <FieldLabel>Name</FieldLabel>
         <FieldContent>
-          <Input {...field} isError={!!fieldState.error} />
+          <Input
+            {...field}
+            isError={!!fieldState.error}
+            autoComplete="off"
+            name="pam-discovery-source-name"
+          />
           <FieldError>{fieldState.error?.message}</FieldError>
         </FieldContent>
       </Field>
@@ -228,29 +238,32 @@ const ActiveDirectoryConfigForm = ({
   );
 };
 
-const unixConfigSchema = z.object({
+const hostRangeConfigSchema = z.object({
   name: z.string().min(1, "Name is required").max(64),
   schedule: z.nativeEnum(PamDiscoverySchedule),
   gatewayId: z.string().nullable(),
   gatewayPoolId: z.string().nullable(),
-  ...unixDiscoveryConfigFormShape
+  ...hostRangeDiscoveryConfigFormShape
 });
 
-const UnixConfigForm = ({
+const HostRangeConfigForm = ({
   source,
+  discoveryType,
   onDirtyChange
 }: {
   source: TPamDiscoverySource;
+  discoveryType: THostRangeDiscoveryType;
   onDirtyChange: (isDirty: boolean) => void;
 }) => {
   const updateSource = useUpdatePamDiscoverySource();
+  const sourceMeta = HOST_RANGE_SOURCES[discoveryType];
 
-  const defaults: z.infer<typeof unixConfigSchema> = {
+  const defaults: z.infer<typeof hostRangeConfigSchema> = {
     name: source.name,
     schedule: source.schedule,
     gatewayId: source.gatewayId ?? null,
     gatewayPoolId: source.gatewayPoolId ?? null,
-    ...unixDiscoveryConfigFromSource(source.discoveryConfiguration)
+    ...hostRangeDiscoveryConfigFromSource(discoveryType, source.discoveryConfiguration)
   };
 
   const {
@@ -260,7 +273,7 @@ const UnixConfigForm = ({
     watch,
     setValue,
     formState: { isDirty }
-  } = useForm({ resolver: zodResolver(unixConfigSchema), defaultValues: defaults });
+  } = useForm({ resolver: zodResolver(hostRangeConfigSchema), defaultValues: defaults });
 
   useEffect(() => {
     onDirtyChange(isDirty);
@@ -272,7 +285,7 @@ const UnixConfigForm = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, reset]);
 
-  const onSubmit = (data: z.infer<typeof unixConfigSchema>) => {
+  const onSubmit = (data: z.infer<typeof hostRangeConfigSchema>) => {
     updateSource.mutate(
       {
         sourceId: source.id,
@@ -282,7 +295,7 @@ const UnixConfigForm = ({
         schedule: data.schedule,
         gatewayId: data.gatewayId,
         gatewayPoolId: data.gatewayPoolId,
-        configuration: buildUnixDiscoveryConfiguration(data)
+        configuration: buildHostRangeDiscoveryConfiguration(discoveryType, data)
       },
       { onSuccess: () => createNotification({ type: "success", text: "Discovery source updated" }) }
     );
@@ -292,8 +305,12 @@ const UnixConfigForm = ({
     <form onSubmit={handleSubmit(onSubmit)} className="flex flex-1 flex-col gap-4 p-4">
       <ConfigCard>
         <NameField control={control as unknown as Control<{ name: string }>} />
-        <SshCredentialAccountsField
+        <CredentialAccountsField
           control={control as unknown as Control<{ credentialAccountIds: string[] }>}
+          accountType={sourceMeta.accountType}
+          placeholder={sourceMeta.placeholder}
+          description={sourceMeta.description}
+          warning={sourceMeta.warning}
         />
         <GatewayField
           gatewayId={watch("gatewayId")}
@@ -306,8 +323,9 @@ const UnixConfigForm = ({
         <ScheduleField
           control={control as unknown as Control<{ schedule: PamDiscoverySchedule }>}
         />
-        <UnixDiscoveryConfigFields
-          control={control as unknown as Control<TUnixDiscoveryConfigFields>}
+        <HostRangeDiscoveryConfigFields
+          control={control as unknown as Control<THostRangeDiscoveryConfigFields>}
+          discoveryType={discoveryType}
         />
       </ConfigCard>
 
@@ -324,8 +342,12 @@ const ConfigurationTab = ({
   source: TPamDiscoverySource;
   onDirtyChange: (isDirty: boolean) => void;
 }) =>
-  source.discoveryType === PamDiscoveryType.Unix ? (
-    <UnixConfigForm source={source} onDirtyChange={onDirtyChange} />
+  isHostRangeDiscoveryType(source.discoveryType) ? (
+    <HostRangeConfigForm
+      source={source}
+      discoveryType={source.discoveryType}
+      onDirtyChange={onDirtyChange}
+    />
   ) : (
     <ActiveDirectoryConfigForm source={source} onDirtyChange={onDirtyChange} />
   );
@@ -355,6 +377,9 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
   const { map: accountTypeMap } = usePamAccountTypeMap();
   const source = sources.find((s) => s.id === sourceId);
   const typeMeta = discoveryTypes.find((t) => t.type === source?.discoveryType);
+  const showDependencies =
+    source?.discoveryType !== PamDiscoveryType.Postgres &&
+    source?.discoveryType !== PamDiscoveryType.MsSQL;
   const credentialAccount = adminAccounts.find((a) => a.id === source?.credentialAccountId);
   const credentialAccountLabel = (() => {
     if (!credentialAccount) return "View account";
@@ -375,9 +400,27 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
     });
   const triggerScan = useTriggerPamDiscoveryScan();
 
+  const [staleSearch, setStaleSearch] = useState("");
+  const [debouncedStaleSearch] = useDebounce(staleSearch);
+  const [stalePage, setStalePage] = useState(1);
+  const [stalePerPage, setStalePerPage] = useState(() =>
+    getUserTablePreference("pamStaleAccountsTable", PreferenceKey.PerPage, 20)
+  );
+  const staleOffset = (stalePage - 1) * stalePerPage;
+  const { data: { accounts: stale = [], totalCount: staleTotal = 0 } = {} } =
+    useListPamStaleAccounts(sourceId ?? "", {
+      search: debouncedStaleSearch,
+      offset: staleOffset,
+      limit: stalePerPage
+    });
+
   useEffect(() => {
     setPage(1);
   }, [debouncedSearch]);
+
+  useEffect(() => {
+    setStalePage(1);
+  }, [debouncedStaleSearch]);
 
   const queryClient = useQueryClient();
   const latestRunStatus = runs[0]?.status;
@@ -387,6 +430,10 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
       queryClient.invalidateQueries({
         queryKey: [...pamKeys.discovery(), "discovered", sourceId ?? ""]
       });
+      queryClient.invalidateQueries({
+        queryKey: [...pamKeys.discovery(), "stale", sourceId ?? ""]
+      });
+      queryClient.invalidateQueries({ queryKey: [...pamKeys.discovery(), "sources"] });
       // A scan reconciles dependencies onto managed accounts, so refresh account views (their dependency
       // lists are keyed under pamKeys.account()) which the discovery scan otherwise never invalidates.
       queryClient.invalidateQueries({ queryKey: pamKeys.account() });
@@ -482,7 +529,7 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
                     </TableHead>
                     <TableHead>Name</TableHead>
                     <TableHead className="w-40">Type</TableHead>
-                    <TableHead className="w-40">Dependencies</TableHead>
+                    {showDependencies && <TableHead className="w-40">Dependencies</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -504,8 +551,8 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
                         <TableCell>
                           <div className="flex items-center gap-2">
                             {typeDetails && (
-                              <img
-                                src={`/images/integrations/${typeDetails.icon}`}
+                              <ProviderIcon
+                                icon={typeDetails.icon}
                                 alt={typeDetails.name}
                                 className="size-5 shrink-0 rounded-sm"
                               />
@@ -515,13 +562,15 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
                             </span>
                           </div>
                         </TableCell>
-                        <TableCell>
-                          {hasDeps ? (
-                            <Badge variant="neutral">{account.dependencyCount}</Badge>
-                          ) : (
-                            <span className="text-sm text-muted">-</span>
-                          )}
-                        </TableCell>
+                        {showDependencies && (
+                          <TableCell>
+                            {hasDeps ? (
+                              <Badge variant="neutral">{account.dependencyCount}</Badge>
+                            ) : (
+                              <span className="text-sm text-muted">-</span>
+                            )}
+                          </TableCell>
+                        )}
                       </TableRow>
                     );
                   })}
@@ -562,6 +611,116 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
     </div>
   );
 
+  const sq = staleSearch.trim().toLowerCase();
+  const visibleStale = sq ? stale.filter((a) => a.name.toLowerCase().includes(sq)) : stale;
+
+  const staleTab: ReactNode = (
+    <div className="flex flex-1 flex-col gap-4 p-4">
+      <Card>
+        <CardHeader className="border-b">
+          <CardTitle className="text-base">Stale Accounts</CardTitle>
+          <CardDescription>
+            Imported accounts the latest scan no longer found in the environment. They keep working
+            as normal, including rotation and access, so review them and delete the ones that are
+            really gone.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <InputGroup>
+            <InputGroupAddon align="inline-start">
+              <Search />
+            </InputGroupAddon>
+            <InputGroupInput
+              placeholder="Search accounts..."
+              value={staleSearch}
+              onChange={(e) => setStaleSearch(e.target.value)}
+            />
+          </InputGroup>
+
+          {staleTotal === 0 ? (
+            <Empty className="border">
+              <EmptyHeader>
+                <EmptyTitle>
+                  {debouncedStaleSearch
+                    ? "No accounts match your search."
+                    : "No stale accounts. The latest scan found everything imported from this source."}
+                </EmptyTitle>
+              </EmptyHeader>
+            </Empty>
+          ) : (
+            <>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Name</TableHead>
+                    <TableHead className="w-40">Folder</TableHead>
+                    <TableHead className="w-40">Type</TableHead>
+                    <TableHead className="w-48">Last seen</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {visibleStale.map((account) => {
+                    const typeDetails = accountTypeMap[account.accountType as PamAccountType];
+                    return (
+                      <TableRow key={account.id}>
+                        <TableCell className="font-medium text-foreground">
+                          <Link
+                            to="/organizations/$orgId/pam/accounts"
+                            params={{ orgId: currentOrg.id }}
+                            search={{ accountId: account.accountId }}
+                            className="hover:underline"
+                          >
+                            <HighlightText text={account.name} highlight={staleSearch} />
+                          </Link>
+                        </TableCell>
+                        <TableCell className="text-muted">{account.folderName ?? "-"}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            {typeDetails && (
+                              <ProviderIcon
+                                icon={typeDetails.icon}
+                                alt={typeDetails.name}
+                                className="size-5 shrink-0 rounded-sm"
+                              />
+                            )}
+                            <span className="text-sm">
+                              {typeDetails?.name ?? account.accountType}
+                            </span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-muted">
+                          {account.lastDiscoveredAt
+                            ? format(new Date(account.lastDiscoveredAt), "MMM d, yyyy h:mm a")
+                            : "-"}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+
+              <Pagination
+                count={staleTotal}
+                page={stalePage}
+                perPage={stalePerPage}
+                onChangePage={setStalePage}
+                onChangePerPage={(newPerPage) => {
+                  setStalePerPage(newPerPage);
+                  setStalePage(1);
+                  setUserTablePreference(
+                    "pamStaleAccountsTable",
+                    PreferenceKey.PerPage,
+                    newPerPage
+                  );
+                }}
+              />
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+
   const runsTab: ReactNode = (
     <div className="flex flex-1 flex-col gap-4 p-4">
       <Card>
@@ -577,7 +736,7 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
               </EmptyHeader>
             </Empty>
           ) : (
-            <Table className="w-full table-fixed">
+            <Table className="w-full">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-44">Started</TableHead>
@@ -661,6 +820,7 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
 
   const tabContent: Partial<Record<PamSheetTab, ReactNode>> = {
     [PamSheetTab.General]: stagedTab,
+    [PamSheetTab.Stale]: staleTab,
     [PamSheetTab.Runs]: runsTab,
     [PamSheetTab.Configuration]: source ? (
       <ConfigurationTab source={source} onDirtyChange={setIsFormDirty} />
@@ -683,6 +843,8 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
             setSelected({});
             setSearch("");
             setPage(1);
+            setStaleSearch("");
+            setStalePage(1);
           }
           onOpenChange(open);
         }}
@@ -690,8 +852,8 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
         icon={
           <div className="mb-4 flex size-16 items-center justify-center rounded-lg border border-border bg-container">
             {typeMeta?.icon ? (
-              <img
-                src={`/images/integrations/${typeMeta.icon}`}
+              <ProviderIcon
+                icon={typeMeta.icon}
                 alt={typeMeta.name}
                 className="size-10 rounded-sm"
               />
@@ -727,7 +889,7 @@ export const DiscoverySourceDetailSheet = ({ isOpen, sourceId, onOpenChange }: P
               : "Never"
           }
         ]}
-        footer={
+        sidebarFooter={
           <Button
             variant="pam"
             size="xs"

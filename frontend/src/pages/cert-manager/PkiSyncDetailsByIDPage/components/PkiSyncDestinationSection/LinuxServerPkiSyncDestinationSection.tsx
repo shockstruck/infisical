@@ -1,13 +1,6 @@
-/* eslint-disable jsx-a11y/label-has-associated-control */
-import { PkiSyncExportFormat } from "@app/hooks/api/pkiSyncs";
+import { Detail, DetailLabel, DetailValue } from "@app/components/v3";
+import { PKI_SYNC_EXPORT_FORMAT_LABELS, PkiSyncExportFormat } from "@app/hooks/api/pkiSyncs";
 import { TLinuxServerPkiSync } from "@app/hooks/api/pkiSyncs/types/linux-server-sync";
-
-const GenericFieldLabel = ({ label, children }: { label: string; children: React.ReactNode }) => (
-  <div className="mb-4">
-    <p className="text-sm font-medium text-mineshaft-300">{label}</p>
-    <div className="text-sm text-mineshaft-300">{children}</div>
-  </div>
-);
 
 type Props = {
   pkiSync: TLinuxServerPkiSync;
@@ -18,12 +11,23 @@ export const LinuxServerPkiSyncDestinationSection = ({ pkiSync }: Props) => {
 
   return (
     <>
-      <GenericFieldLabel label="Destination Directory">
-        {pkiSync.destinationConfig.destinationPath}
-      </GenericFieldLabel>
-      <GenericFieldLabel label="Export Format">
-        {exportFormat === PkiSyncExportFormat.Pkcs12 ? "PKCS#12 (.pfx)" : "PEM"}
-      </GenericFieldLabel>
+      {pkiSync.destinationConfig.host && (
+        <Detail>
+          <DetailLabel>Target Host</DetailLabel>
+          <DetailValue>
+            {pkiSync.destinationConfig.host}
+            {pkiSync.destinationConfig.port ? `:${pkiSync.destinationConfig.port}` : ""}
+          </DetailValue>
+        </Detail>
+      )}
+      <Detail>
+        <DetailLabel>Destination Directory</DetailLabel>
+        <DetailValue>{pkiSync.destinationConfig.destinationPath}</DetailValue>
+      </Detail>
+      <Detail>
+        <DetailLabel>Export Format</DetailLabel>
+        <DetailValue>{PKI_SYNC_EXPORT_FORMAT_LABELS[exportFormat] ?? exportFormat}</DetailValue>
+      </Detail>
     </>
   );
 };

@@ -1,8 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { components, OptionProps } from "react-select";
-import { Ban, FilterIcon, Trash2, User as UserIcon, Users as UsersIcon } from "lucide-react";
+import {
+  Ban,
+  FilterIcon,
+  ShieldAlert,
+  Trash2,
+  User as UserIcon,
+  Users as UsersIcon
+} from "lucide-react";
 import { twMerge } from "tailwind-merge";
 
+import { PamEnterpriseAlertingUpgradeIntent } from "@app/components/license/UpgradeGate";
 import { createNotification } from "@app/components/notifications";
 import { DeleteActionModal } from "@app/components/v2";
 import {
@@ -33,12 +41,13 @@ import {
   TooltipTrigger
 } from "@app/components/v3";
 import { Skeleton } from "@app/components/v3/generic/Skeleton";
-import { useOrganization, useSubscription } from "@app/context";
+import { useOrganization, useProject, useSubscription } from "@app/context";
 import {
   getUserTablePreference,
   PreferenceKey,
   setUserTablePreference
 } from "@app/helpers/userTablePreferences";
+import { AlertChannelType, AlertResourceType } from "@app/hooks/api/alerts";
 import { useGetOrganizationGroups } from "@app/hooks/api/organization/queries";
 import {
   PamAccessRequestStatus,
@@ -54,9 +63,12 @@ import {
 } from "@app/hooks/api/pam";
 import { TPamAccessRequest, TPamNotificationConfig } from "@app/hooks/api/pam/types";
 import { useGetOrgUsers } from "@app/hooks/api/users/queries";
+import { AlertAction } from "@app/views/Alerts";
 
+import { AccessTypeBadge } from "../../components/AccessTypeBadge";
 import { AccountPlatformIcon } from "../../components/AccountPlatformIcon";
 import { getRequestStatusInfo, isGrantActive } from "../../components/approvalRequestStatus";
+import { getRequesterSubtitle } from "../../components/requesterDisplay";
 import { FolderNotificationsSection } from "./FolderNotificationsSection";
 
 type ApproverEntry = { type: PamApproverType; id: string };
@@ -97,8 +109,8 @@ type Props = {
 
 export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
   const { currentOrg } = useOrganization();
+  const { currentProject } = useProject();
   const { subscription } = useSubscription();
-  const isPamSlackEnabled = Boolean(subscription?.pamSlackNotifications);
   const { data: config, isLoading } = useGetPamApprovalConfig(folderId);
   const { data: orgUsers } = useGetOrgUsers(currentOrg.id);
   const { data: orgGroups } = useGetOrganizationGroups(currentOrg.id);
@@ -129,12 +141,13 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
 
   const confirmRevoke = async () => {
     if (!requestToRevoke) return;
-    await revokeMutation.mutateAsync({ requestId: requestToRevoke.id });
+    await revokeMutation.mutateAsync({ grantId: requestToRevoke.grantId! });
     createNotification({ text: "Access revoked", type: "success" });
     setRequestToRevoke(null);
   };
 
   const [approvers, setApprovers] = useState<ApproverEntry[]>([]);
+  const [breakGlassUsers, setBreakGlassApprovers] = useState<ApproverEntry[]>([]);
   const [isDirty, setIsDirty] = useState(false);
   const [notificationConfigs, setNotificationConfigs] = useState<TPamNotificationConfig[]>([]);
 
@@ -142,6 +155,11 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
     if (!config?.steps?.[0]) return [];
     return config.steps[0].approvers.map((a) => ({ type: a.type, id: a.id }));
   }, [config]);
+
+  const savedBreakGlassUsers = useMemo(
+    () => (config?.breakGlassUsers ?? []).map((a) => ({ type: a.type, id: a.id })),
+    [config]
+  );
 
   const savedNotificationConfigs = useMemo<TPamNotificationConfig[]>(
     () =>
@@ -167,6 +185,10 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
   }, [savedApprovers]);
 
   useEffect(() => {
+    setBreakGlassApprovers(savedBreakGlassUsers);
+  }, [savedBreakGlassUsers]);
+
+  useEffect(() => {
     setNotificationConfigs(savedNotificationConfigs);
   }, [savedNotificationConfigs]);
 
@@ -174,7 +196,11 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
     () => JSON.stringify(notificationConfigs) !== JSON.stringify(savedNotificationConfigs),
     [notificationConfigs, savedNotificationConfigs]
   );
-  const isAnyDirty = isDirty || isNotifDirty;
+  const isBreakGlassDirty = useMemo(
+    () => JSON.stringify(breakGlassUsers) !== JSON.stringify(savedBreakGlassUsers),
+    [breakGlassUsers, savedBreakGlassUsers]
+  );
+  const isAnyDirty = isDirty || isNotifDirty || isBreakGlassDirty;
 
   useEffect(() => {
     onDirtyChange?.(isAnyDirty);
@@ -184,6 +210,11 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
   const selectedIds = useMemo(
     () => new Set(approvers.map((a) => `${a.type}:${a.id}`)),
     [approvers]
+  );
+
+  const selectedBreakGlassIds = useMemo(
+    () => new Set(breakGlassUsers.map((a) => `${a.type}:${a.id}`)),
+    [breakGlassUsers]
   );
 
   const userMap = useMemo(
@@ -239,6 +270,31 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
     return [...groups, ...users];
   }, [orgGroups, orgUsers, selectedIds, memberUserIds, memberGroupIds]);
 
+  const breakGlassOptions = useMemo<ApproverOption[]>(() => {
+    const groups: ApproverOption[] = (orgGroups ?? [])
+      .filter((g) => memberGroupIds.has(g.id) && !selectedBreakGlassIds.has(`group:${g.id}`))
+      .map((g) => ({ value: g.id, label: g.name, kind: PamApproverType.Group, subtitle: "Group" }));
+
+    const users: ApproverOption[] = (orgUsers ?? [])
+      .filter(
+        (ou) =>
+          ou.user.id &&
+          memberUserIds.has(ou.user.id) &&
+          !selectedBreakGlassIds.has(`user:${ou.user.id}`)
+      )
+      .map((ou) => {
+        const name = [ou.user.firstName, ou.user.lastName].filter(Boolean).join(" ");
+        return {
+          value: ou.user.id,
+          label: name || ou.user.email || ou.inviteEmail || ou.user.username,
+          kind: PamApproverType.User,
+          subtitle: ou.user.email ?? ou.inviteEmail ?? ""
+        };
+      });
+
+    return [...groups, ...users];
+  }, [orgGroups, orgUsers, selectedBreakGlassIds, memberUserIds, memberGroupIds]);
+
   const addApprover = (opt: ApproverOption | null) => {
     if (!opt) return;
     setApprovers((prev) => [...prev, { type: opt.kind, id: opt.value }]);
@@ -250,16 +306,20 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
     setIsDirty(true);
   };
 
+  const addBreakGlassUser = (opt: ApproverOption | null) => {
+    if (!opt) return;
+    setBreakGlassApprovers((prev) => [...prev, { type: opt.kind, id: opt.value }]);
+  };
+
+  const removeBreakGlassUser = (index: number) => {
+    setBreakGlassApprovers((prev) => prev.filter((_, i) => i !== index));
+  };
+
   const handleSave = () => {
-    const hasIncompleteConfig =
-      isPamSlackEnabled &&
-      notificationConfigs.some(
-        (c) => !c.workflowIntegrationId || c.channels.length === 0 || c.events.length === 0
-      );
-    if (hasIncompleteConfig) {
+    if (breakGlassUsers.length > 0 && approvers.length === 0) {
       createNotification({
         type: "error",
-        text: "Each notification needs a Slack workspace, at least one channel, and at least one event"
+        text: "Break-glass users need at least one approver to skip"
       });
       return;
     }
@@ -268,8 +328,9 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
       {
         folderId,
         steps: [{ approvers }],
-        // undefined leaves server-side configs untouched when the plan doesn't include the feature
-        notificationConfigs: isPamSlackEnabled ? notificationConfigs : undefined
+        breakGlassUsers,
+        // Legacy Slack configs can only be removed, so they're sent only when one was.
+        notificationConfigs: isNotifDirty ? notificationConfigs : undefined
       },
       {
         onSuccess: () => {
@@ -285,6 +346,7 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
 
   const handleDiscard = () => {
     setApprovers(savedApprovers);
+    setBreakGlassApprovers(savedBreakGlassUsers);
     setNotificationConfigs(savedNotificationConfigs);
     setIsDirty(false);
   };
@@ -335,7 +397,7 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
                 <TableRow>
                   <TableHead>Approver</TableHead>
                   <TableHead>Type</TableHead>
-                  <TableHead className="w-12" />
+                  <TableHead variant="action" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -366,7 +428,7 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
                           {approver.type === PamApproverType.User ? "User" : "Group"}
                         </Badge>
                       </TableCell>
-                      <TableCell>
+                      <TableCell variant="action">
                         <IconButton
                           variant="ghost"
                           size="xs"
@@ -386,7 +448,125 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
         </CardContent>
       </Card>
 
-      {isPamSlackEnabled && (
+      <Card>
+        <CardHeader className="border-b">
+          <CardTitle className="text-base">
+            Break-Glass Users
+            <Badge variant="pam">{breakGlassUsers.length}</Badge>
+          </CardTitle>
+          <CardDescription>
+            Users and groups who can grant themselves access to accounts in this folder in an
+            emergency, without an approver. Only applies to accounts whose template has the Allow
+            Break-Glass policy on. Every use is recorded in the audit log and emailed to the
+            approvers who were skipped.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <FilterableSelect
+            value={null}
+            options={breakGlassOptions}
+            onChange={(opt) => addBreakGlassUser(opt as ApproverOption | null)}
+            getOptionValue={(opt) => `${opt.kind}:${opt.value}`}
+            getOptionLabel={(opt) => opt.label}
+            components={{ Option: ApproverSelectOption }}
+            placeholder="Add a user or group..."
+            noOptionsMessage={() =>
+              "No eligible folder members left. Add users or groups to this folder under the Permissions tab first."
+            }
+          />
+
+          {breakGlassUsers.length === 0 ? (
+            <div className="rounded-md border border-border p-8 text-center text-sm text-muted">
+              No break-glass users configured. Nobody can bypass approval in this folder.
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Approver</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead variant="action" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {breakGlassUsers.map((approver, idx) => {
+                  const Icon = KIND_ICON[approver.type];
+                  const displayName =
+                    approver.type === PamApproverType.User
+                      ? (userMap.get(approver.id)?.label ?? approver.id)
+                      : (groupMap.get(approver.id) ?? approver.id);
+                  const subtitle =
+                    approver.type === PamApproverType.User
+                      ? userMap.get(approver.id)?.email
+                      : undefined;
+
+                  return (
+                    <TableRow key={`bg-${approver.type}-${approver.id}`} className="h-14">
+                      <TableCell>
+                        <div className="flex items-center gap-2.5">
+                          <Icon className="size-4 shrink-0 text-muted" />
+                          <div className="flex flex-col">
+                            <span className="text-sm font-medium">{displayName}</span>
+                            {subtitle && <span className="text-xs text-muted">{subtitle}</span>}
+                          </div>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="neutral">
+                          {approver.type === PamApproverType.User ? "User" : "Group"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell variant="action">
+                        <IconButton
+                          variant="ghost"
+                          size="xs"
+                          aria-label="Remove break-glass user"
+                          className="text-muted hover:text-danger"
+                          onClick={() => removeBreakGlassUser(idx)}
+                        >
+                          <Trash2 className="size-4" />
+                        </IconButton>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Alerts</CardTitle>
+          <CardDescription>
+            Notify email, Slack, webhook, or PagerDuty channels about access request activity for
+            accounts in this folder.
+          </CardDescription>
+          <CardAction>
+            <AlertAction
+              resourceType={AlertResourceType.PamFolder}
+              resourceId={folderId}
+              projectId={currentProject.id}
+              channelPaywall={
+                subscription?.pamEnterpriseAlerting
+                  ? undefined
+                  : {
+                      lockedChannelTypes: [
+                        AlertChannelType.Slack,
+                        AlertChannelType.Webhook,
+                        AlertChannelType.PagerDuty
+                      ],
+                      intent: PamEnterpriseAlertingUpgradeIntent,
+                      paywallKey: "pam.folder-alert-channels"
+                    }
+              }
+            />
+          </CardAction>
+        </CardHeader>
+      </Card>
+
+      {savedNotificationConfigs.length > 0 && (
         <FolderNotificationsSection
           configs={notificationConfigs}
           integrationSlugById={integrationSlugById}
@@ -409,7 +589,7 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
                 <IconButton
                   aria-label="Filter requests"
                   variant={requestsStatusFilter !== "all" ? "project" : "outline"}
-                  className={twMerge(requestsStatusFilter !== "all" && "text-primary")}
+                  className={twMerge(requestsStatusFilter !== "all" && "text-project")}
                 >
                   <FilterIcon />
                 </IconButton>
@@ -450,8 +630,9 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
                   <TableRow>
                     <TableHead>Requester</TableHead>
                     <TableHead>Account</TableHead>
+                    <TableHead>Requesting</TableHead>
                     <TableHead>Status</TableHead>
-                    {canRevoke && <TableHead className="w-12" />}
+                    {canRevoke && <TableHead variant="action" />}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -462,7 +643,9 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
                         <TableCell className="h-[50px]">
                           <div className="flex flex-col">
                             <span className="text-sm font-medium">{request.requesterName}</span>
-                            <span className="text-xs text-muted">{request.requesterEmail}</span>
+                            <span className="text-xs text-muted">
+                              {getRequesterSubtitle(request)}
+                            </span>
                           </div>
                         </TableCell>
                         <TableCell className="text-sm">
@@ -474,10 +657,28 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
                           </div>
                         </TableCell>
                         <TableCell>
-                          <Badge variant={status.variant}>{status.label}</Badge>
+                          <AccessTypeBadge accessType={request.accessType} />
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-1.5">
+                            <Badge variant={status.variant}>{status.label}</Badge>
+                            {request.isBreakGlass && (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Badge variant="danger">
+                                    <ShieldAlert className="mr-1 size-3" />
+                                    Break-glass
+                                  </Badge>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  {request.bypassReason ? ` Reason: "${request.bypassReason}"` : ""}
+                                </TooltipContent>
+                              </Tooltip>
+                            )}
+                          </div>
                         </TableCell>
                         {canRevoke && (
-                          <TableCell onClick={(e) => e.stopPropagation()}>
+                          <TableCell variant="action" onClick={(e) => e.stopPropagation()}>
                             {isGrantActive(request) && (
                               <Tooltip>
                                 <TooltipTrigger asChild>
@@ -529,7 +730,7 @@ export const FolderApprovalsTab = ({ folderId, onDirtyChange }: Props) => {
           if (!open) setRequestToRevoke(null);
         }}
         title="Revoke Access"
-        subTitle="Are you sure you want to revoke this user's approved access? Any active session using it will be terminated immediately."
+        subTitle="Are you sure you want to revoke this user's approved access?"
         deleteKey="revoke"
         buttonText="Revoke"
         onDeleteApproved={confirmRevoke}

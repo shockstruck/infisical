@@ -4,8 +4,7 @@ import { MoreHorizontalIcon, PencilIcon, Plus, SearchIcon, Trash2Icon } from "lu
 
 import { createNotification } from "@app/components/notifications";
 import { ProjectPermissionCan } from "@app/components/permissions";
-import { DeleteActionModal } from "@app/components/v2";
-import { HighlightText } from "@app/components/v2/HighlightText";
+import { HighlightText } from "@app/components/utilities/HighlightText";
 import {
   Badge,
   Button,
@@ -32,6 +31,7 @@ import {
   TableHeader,
   TableRow
 } from "@app/components/v3";
+import { DeleteConfirmDialog } from "@app/components/v3/platform";
 import { ProjectPermissionActions, ProjectPermissionSub, useProject, useUser } from "@app/context";
 import { formatProjectRoleName } from "@app/helpers/roles";
 import { useGetWorkspaceUsers } from "@app/hooks/api";
@@ -39,6 +39,7 @@ import { useRemovePamProductUserMember } from "@app/hooks/api/pam";
 import { ProjectMembershipRole } from "@app/hooks/api/roles/types";
 import { TWorkspaceUser } from "@app/hooks/api/users/types";
 
+import { PendingInvitationBadge } from "../../components/PendingInvitationBadge";
 import { InviteMemberModal } from "./InviteMemberModal";
 import { MemberRoleModal } from "./MemberRoleModal";
 
@@ -64,17 +65,18 @@ export const MembersTab = () => {
     }
   }, [requesterEmail]);
 
-  const filteredMembers = useMemo(
-    () =>
-      members.filter(
-        ({ user: u, inviteEmail }) =>
-          u?.firstName?.toLowerCase().includes(search.toLowerCase()) ||
-          u?.lastName?.toLowerCase().includes(search.toLowerCase()) ||
-          u?.email?.toLowerCase().includes(search.toLowerCase()) ||
-          inviteEmail?.toLowerCase().includes(search.toLowerCase())
-      ),
-    [members, search]
-  );
+  const filteredMembers = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) return members;
+
+    // Username is the login address and the only always-populated field: a member who hasn't
+    // accepted their org invite can have no name and no email.
+    return members.filter(({ user: u, inviteEmail }) =>
+      [u?.firstName, u?.lastName, u?.username, u?.email, inviteEmail].some((field) =>
+        field?.toLowerCase().includes(term)
+      )
+    );
+  }, [members, search]);
 
   const handleRemoveMember = async () => {
     if (!memberToRemove) return;
@@ -167,11 +169,14 @@ export const MembersTab = () => {
                 return (
                   <TableRow key={member.id}>
                     <TableCell className="font-medium">
-                      <HighlightText text={getDisplayName(member) ?? ""} highlight={search} />
+                      <div className="flex items-center gap-x-1.5">
+                        <HighlightText text={getDisplayName(member) ?? ""} highlight={search} />
+                        <PendingInvitationBadge isPending={member.user.isOrgMembershipPending} />
+                      </div>
                     </TableCell>
                     <TableCell className="text-sm">
                       <HighlightText
-                        text={member.user.email || member.inviteEmail || ""}
+                        text={member.user.email || member.inviteEmail || member.user.username || ""}
                         highlight={search}
                       />
                     </TableCell>
@@ -248,15 +253,16 @@ export const MembersTab = () => {
 
       <InviteMemberModal isOpen={isInviteOpen} onOpenChange={setIsInviteOpen} />
 
-      <DeleteActionModal
+      <DeleteConfirmDialog
         isOpen={!!memberToRemove}
-        onChange={(isOpen) => {
+        onOpenChange={(isOpen) => {
           if (!isOpen) setMemberToRemove(null);
         }}
         title={`Remove ${memberToRemove ? getDisplayName(memberToRemove) : "member"}?`}
-        deleteKey="remove"
-        buttonText="Remove"
-        onDeleteApproved={handleRemoveMember}
+        description="This action is irreversible."
+        confirmKey="remove"
+        confirmLabel="Remove"
+        onConfirm={handleRemoveMember}
       />
     </div>
   );

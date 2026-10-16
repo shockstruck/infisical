@@ -4,7 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate } from "@tanstack/react-router";
 import { z } from "zod";
 
-import { UpgradePlanModal } from "@app/components/license/UpgradePlanModal";
+import { CustomRolesUpgradeIntent, UpgradeGate } from "@app/components/license/UpgradeGate";
 import { createNotification } from "@app/components/notifications";
 import {
   Button,
@@ -77,7 +77,7 @@ export const RoleModal = ({ popUp, handlePopUpToggle }: Props) => {
     if (role) {
       reset({
         name: role.name,
-        description: role.description,
+        description: role.description ?? "",
         slug: role.slug
       });
     } else {
@@ -165,6 +165,8 @@ export const RoleModal = ({ popUp, handlePopUpToggle }: Props) => {
                       placeholder="Billing Team"
                       isError={Boolean(error)}
                       {...field}
+                      autoComplete="off"
+                      name="org-role-name"
                     />
                     <FieldError>{error?.message}</FieldError>
                   </Field>
@@ -218,11 +220,14 @@ export const RoleModal = ({ popUp, handlePopUpToggle }: Props) => {
           </form>
         </DialogContent>
       </Dialog>
-      <UpgradePlanModal
+      <UpgradeGate
+        paywallKey="organization.role"
         isOpen={upgradePlanPopUp.upgradePlan.isOpen}
         onOpenChange={(isOpen) => handleUpgradePlanPopUpToggle("upgradePlan", isOpen)}
-        text="Your current plan does not include custom roles. To unlock this feature, please upgrade to Infisical Enterprise plan."
-        isEnterpriseFeature
+        intent={{
+          ...CustomRolesUpgradeIntent,
+          isEnterpriseFeature: false
+        }}
       />
     </>
   );
