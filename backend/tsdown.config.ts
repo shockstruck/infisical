@@ -35,7 +35,6 @@ export default defineConfig({
   deps: { onlyBundle: [] },
   outputOptions: { keepNames: true },
   copy: [
-    { from: "src/**/*.{pem,yaml,txt}", to: "dist", flatten: false },
-    { from: "src/ee/LICENSE.md", to: "dist/ee" }
+    { from: "src/**/*.{pem,yaml,txt}", to: "dist", flatten: false }
   ]
 });
