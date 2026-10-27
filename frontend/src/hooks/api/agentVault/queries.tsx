@@ -1,11 +1,12 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { InfiniteData, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import axios from "axios";
 
 import { apiRequest } from "@app/config/request";
 import { useOrganization } from "@app/context";
+import { VARIABLE_KEY_MAX_LENGTH, VARIABLE_KEY_RE } from "@app/helpers/agentVaultVariables";
 
-import { AgentVaultMemberType } from "./enums";
+import { AgentVaultMemberType, AgentVaultVariableScope } from "./enums";
 import {
   createSessionLogChunkCache,
   decryptSessionLogPage,
@@ -31,13 +32,14 @@ import {
   TAgentVaultSessionLogHealth,
   TAgentVaultSessionLogHistoryPage,
   TAgentVaultSessionLogReadCheck,
-  TAgentVaultSessionLogSettings,
+  TAgentVaultSessionLogSettingsState,
   TAgentVaultSessionLogTailPage,
   TAgentVaultVariable,
   TListAgentVaultAccessBundlesDTO,
   TListAgentVaultMembersDTO,
   TListAgentVaultProxiesDTO,
-  TListAgentVaultSessionsDTO
+  TListAgentVaultSessionsDTO,
+  TListAgentVaultVariablesDTO
 } from "./types";
 
 export const fetchAgentVaultProjectId = async () => {
@@ -88,8 +90,11 @@ export const agentVaultKeys = {
     accessBundleId: string,
     params?: Omit<TListAgentVaultMembersDTO, "actorType">
   ) => [...agentVaultKeys.accessBundleMembers(orgId, accessBundleId), "available", params] as const,
-  accessBundleVariables: (orgId: string, accessBundleId: string) =>
-    [...agentVaultKeys.accessBundle(orgId, accessBundleId), "variables"] as const,
+  variables: (orgId: string) => [...agentVaultKeys.all(orgId), "variables"] as const,
+  variableList: (orgId: string, params: TListAgentVaultVariablesDTO) =>
+    [...agentVaultKeys.variables(orgId), "list", params] as const,
+  variableKeyStatus: (orgId: string, scope: AgentVaultVariableScope, keys: string[]) =>
+    [...agentVaultKeys.variables(orgId), "key-status", scope, keys] as const,
   members: (orgId: string) => [...agentVaultKeys.all(orgId), "members"] as const,
   memberList: (orgId: string, params?: TListAgentVaultMembersDTO) =>
     [...agentVaultKeys.members(orgId), params] as const,
@@ -214,6 +219,14 @@ export const useListAgentVaultAccessBundles = (params: TListAgentVaultAccessBund
   });
 };
 
+// One page holds them all in practice: it is only the bundles the caller reaches that still require their values.
+export const useListAgentVaultAccessBundlesRequiringSetup = () =>
+  useListAgentVaultAccessBundles({ requiresSetup: true, limit: 100 });
+
+// Only the count is read, so one row is enough.
+export const useListGrantedAgentVaultAccessBundlesRequiringSetup = () =>
+  useListAgentVaultAccessBundles({ requiresSetup: true, granted: true, limit: 1 });
+
 export const useGetAgentVaultAccessBundle = (accessBundleId: string) => {
   const { currentOrg } = useOrganization();
 
@@ -272,10 +285,10 @@ export const useGetAgentVaultSessionLogSettings = (enabled = true) => {
   return useQuery({
     queryKey: agentVaultKeys.sessionLogSettings(currentOrg.id),
     queryFn: async () => {
-      const { data } = await apiRequest.get<{ settings: TAgentVaultSessionLogSettings }>(
+      const { data } = await apiRequest.get<TAgentVaultSessionLogSettingsState>(
         "/api/v1/agent-vault/settings/session-logs"
       );
-      return data.settings;
+      return data;
     },
     enabled
   });
@@ -528,17 +541,82 @@ export const useGetAgentVaultSessionLogs = (
   };
 };
 
-export const useListAgentVaultVariables = (accessBundleId: string, enabled = true) => {
+type TAgentVaultVariablePage = { variables: TAgentVaultVariable[]; totalCount: number };
+
+const fetchAgentVaultVariables = async ({ keys, ...params }: TListAgentVaultVariablesDTO) => {
+  const { data } = await apiRequest.get<TAgentVaultVariablePage>("/api/v1/agent-vault/variables", {
+    params: { ...params, keys: keys?.join(",") }
+  });
+  return data;
+};
+
+export const useListAgentVaultVariables = (
+  params: TListAgentVaultVariablesDTO = {},
+  { enabled = true }: { enabled?: boolean } = {}
+) => {
   const { currentOrg } = useOrganization();
 
   return useQuery({
-    queryKey: agentVaultKeys.accessBundleVariables(currentOrg.id, accessBundleId),
-    queryFn: async () => {
-      const { data } = await apiRequest.get<{ variables: TAgentVaultVariable[] }>(
-        `/api/v1/agent-vault/access-bundles/${accessBundleId}/variables`
-      );
-      return data.variables;
-    },
-    enabled: enabled && Boolean(accessBundleId)
+    queryKey: agentVaultKeys.variableList(currentOrg.id, params),
+    queryFn: () => fetchAgentVaultVariables(params),
+    placeholderData: (prev) => prev,
+    enabled
   });
+};
+
+const KEY_LOOKUP_BATCH_SIZE = 100;
+
+// The API refuses a whole batch that holds one key it would never accept, so such a key isn't sent. No variable can
+// have it, so it counts as missing, as the API says on save.
+const isPossibleVariableKey = (key: string) =>
+  key.length <= VARIABLE_KEY_MAX_LENGTH && VARIABLE_KEY_RE.test(key);
+
+// Whether each key exists, asked through the keys filter in one request per 100 keys. Asked again on window focus
+// and whenever the variables are invalidated, since another admin may create or delete one at any time. A key is in
+// neither set until an answer that asked about it arrives; the previous answer stays up meanwhile, so a key it
+// already covered doesn't flicker while the next set loads.
+export const useAgentVaultVariableKeyStatus = (
+  keys: readonly string[],
+  {
+    enabled = true,
+    isCached = true,
+    scope = AgentVaultVariableScope.Global
+  }: { enabled?: boolean; isCached?: boolean; scope?: AgentVaultVariableScope } = {}
+) => {
+  const { currentOrg } = useOrganization();
+  const possibleKeys = [...new Set(keys.filter(isPossibleVariableKey))].sort();
+
+  const { data } = useQuery({
+    queryKey: agentVaultKeys.variableKeyStatus(currentOrg.id, scope, possibleKeys),
+    queryFn: async () => {
+      const found: string[] = [];
+      for (let i = 0; i < possibleKeys.length; i += KEY_LOOKUP_BATCH_SIZE) {
+        // eslint-disable-next-line no-await-in-loop
+        const page = await fetchAgentVaultVariables({
+          scope,
+          keys: possibleKeys.slice(i, i + KEY_LOOKUP_BATCH_SIZE)
+        });
+        found.push(...page.variables.map((variable) => variable.key));
+      }
+      return { asked: possibleKeys, found };
+    },
+    enabled: enabled && possibleKeys.length > 0,
+    placeholderData: (prev) => prev,
+    refetchOnWindowFocus: true,
+    staleTime: 0,
+    ...(isCached ? {} : { gcTime: 0 })
+  });
+
+  const keySignature = keys.join(",");
+  return useMemo(() => {
+    const asked = new Set(data?.asked);
+    const found = new Set(data?.found);
+    const current = keySignature ? keySignature.split(",") : [];
+    return {
+      existing: new Set(current.filter((key) => found.has(key))) as ReadonlySet<string>,
+      missing: new Set(
+        current.filter((key) => !isPossibleVariableKey(key) || (asked.has(key) && !found.has(key)))
+      ) as ReadonlySet<string>
+    };
+  }, [data, keySignature]);
 };

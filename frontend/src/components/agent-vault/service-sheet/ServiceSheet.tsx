@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FormProvider, useForm } from "react-hook-form";
+import { FormProvider, useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import slugify from "@sindresorhus/slugify";
 import axios from "axios";
@@ -22,12 +22,14 @@ import {
 import { ProviderIcon } from "@app/components/v3/platform/ProviderIcon";
 import { hostError } from "@app/helpers/agentVaultHostPattern";
 import { AgentVaultTemplate, findTemplateForHostPattern } from "@app/helpers/agentVaultTemplates";
-import { useDiscardChangesGuard, useWizardSteps } from "@app/hooks";
+import { findVariableReferences, VARIABLE_KEY_RE } from "@app/helpers/agentVaultVariables";
+import { useDebounce, useDiscardChangesGuard, useWizardSteps } from "@app/hooks";
 import {
   AgentVaultCredentialType,
   AgentVaultVariableReferenceField,
+  TAgentVaultMemberProvidedField,
+  useAgentVaultVariableKeyStatus,
   useCreateAgentVaultService,
-  useListAgentVaultVariables,
   useUpdateAgentVaultService
 } from "@app/hooks/api/agentVault";
 import {
@@ -50,10 +52,15 @@ import {
   isAllMethods,
   SERVICE_STEP_FIELDS,
   ServiceStep,
+  storedMemberFields,
   TServiceForm,
   UNCHANGED_SECRET
 } from "./serviceSchema";
-import { NO_STORED_KEYS, ServiceVariablesContext } from "./ServiceVariablesContext";
+import {
+  NO_MISSING_KEYS,
+  NO_STORED_KEYS,
+  ServiceVariablesContext
+} from "./ServiceVariablesContext";
 import { SERVICE_DOCS_URL, SERVICE_STEPS } from "./stepMeta";
 import { ADVANCED_ITEM, TransformationsFields } from "./TransformationsFields";
 
@@ -67,6 +74,7 @@ const BLANK_SERVICE_FORM: TServiceForm = {
   headerPrefix: "Bearer",
   username: "",
   secret: "",
+  memberProvidedFields: [],
   methods: [...HTTP_METHODS],
   pathPrefixes: [],
   customHeaders: [],
@@ -92,7 +100,9 @@ const formFromTemplate = (picked: AgentVaultTemplate | null, hosts: string[]): T
     ...(cred.type === AgentVaultCredentialType.Bearer && {
       headerName: cred.headerName ?? "Authorization",
       headerPrefix: cred.headerPrefix ?? "Bearer"
-    })
+    }),
+    ...(cred.type === AgentVaultCredentialType.Basic &&
+      cred.username && { username: cred.username })
   };
 };
 
@@ -156,8 +166,6 @@ export const ServiceSheet = ({
   const createService = useCreateAgentVaultService();
   const updateService = useUpdateAgentVaultService();
 
-  const { data: variables } = useListAgentVaultVariables(accessBundleId, isOpen);
-  const variableKeys = useMemo(() => variables?.map((variable) => variable.key), [variables]);
   const storedKeys = useMemo(() => storedVariableKeys(service), [service]);
   // One dialog for every field. The request settles once the dialog has closed, not when the variable is
   // saved: until then the dialog's focus trap would pull focus back from the field that asked.
@@ -176,26 +184,56 @@ export const ServiceSheet = ({
     []
   );
 
-  const serviceVariables = useMemo(
-    () => ({ variables, storedKeys, requestVariable }),
-    [variables, storedKeys, requestVariable]
-  );
-
   const [template, setTemplate] = useState<AgentVaultTemplate | null>(null);
 
-  const schema = useMemo(() => buildServiceSchema(service, variableKeys), [service, variableKeys]);
+  // Read when the form validates, so the schema isn't rebuilt each time a lookup answers.
+  const missingKeysRef = useRef<ReadonlySet<string>>(NO_MISSING_KEYS);
+  const schema = useMemo(
+    () => buildServiceSchema(service, () => missingKeysRef.current),
+    [service]
+  );
 
   const formMethods = useForm<TServiceForm>({
     defaultValues: BLANK_SERVICE_FORM,
     resolver: zodResolver(schema)
   });
   const {
+    control,
     handleSubmit,
     reset,
     setError,
     trigger,
     formState: { errors, isDirty, isSubmitting }
   } = formMethods;
+
+  // Only the keys the form references are looked up, never the whole list.
+  const [secret, username, customHeaders, substitutions] = useWatch({
+    control,
+    name: ["secret", "username", "customHeaders", "substitutions"]
+  });
+  const referencedKeys = useMemo(() => {
+    const texts = [
+      secret,
+      username,
+      ...(customHeaders ?? []).map((header) => header.value),
+      ...(substitutions ?? []).map((substitution) => substitution.value)
+    ];
+    const keys = texts.flatMap((text) =>
+      text && text !== UNCHANGED_SECRET ? findVariableReferences(text) : []
+    );
+    return [...new Set(keys.filter((key) => VARIABLE_KEY_RE.test(key)))].sort().join(",");
+  }, [secret, username, customHeaders, substitutions]);
+  const [debouncedReferencedKeys] = useDebounce(referencedKeys, 300);
+  const { missing: missingKeys } = useAgentVaultVariableKeyStatus(
+    debouncedReferencedKeys ? debouncedReferencedKeys.split(",") : [],
+    { enabled: isOpen }
+  );
+  missingKeysRef.current = missingKeys;
+
+  const serviceVariables = useMemo(
+    () => ({ missingKeys, storedKeys, requestVariable }),
+    [missingKeys, storedKeys, requestVariable]
+  );
 
   const discardActionRef = useRef<VoidFunction>(() => onOpenChange(false));
   const { confirmDiscard, isDiscardDialogOpen, requestDiscard, setIsDiscardDialogOpen } =
@@ -262,6 +300,10 @@ export const ServiceSheet = ({
 
     if (service) {
       const { credential } = service;
+      const memberProvidedFields = storedMemberFields(service);
+      // A member-provided field has no stored value, so it starts empty rather than as "unchanged".
+      const storedValue = (field: TAgentVaultMemberProvidedField) =>
+        memberProvidedFields.includes(field) ? "" : UNCHANGED_SECRET;
       reset({
         ...BLANK_SERVICE_FORM,
         name: service.name,
@@ -276,8 +318,15 @@ export const ServiceSheet = ({
             : "Authorization",
         headerPrefix:
           credential.type === AgentVaultCredentialType.Bearer ? credential.headerPrefix : "Bearer",
-        username: credential.type === AgentVaultCredentialType.Basic ? UNCHANGED_SECRET : undefined,
-        secret: credential.type === AgentVaultCredentialType.Passthrough ? "" : UNCHANGED_SECRET,
+        username:
+          credential.type === AgentVaultCredentialType.Basic
+            ? storedValue(AgentVaultVariableReferenceField.CredentialUsername)
+            : undefined,
+        secret: (() => {
+          if (credential.type === AgentVaultCredentialType.Passthrough) return "";
+          return storedValue(AgentVaultVariableReferenceField.CredentialValue);
+        })(),
+        memberProvidedFields,
         methods: service.allowedMethods ?? [...HTTP_METHODS],
         pathPrefixes: service.allowedPathPrefixes ?? [],
         // The stored values never come back, so each row carries the sentinel until it is retyped.
@@ -333,26 +382,52 @@ export const ServiceSheet = ({
       setStep(0);
     });
 
+  const memberFieldsOf = (data: TServiceForm) => {
+    const isMemberProvided = (field: TAgentVaultMemberProvidedField) =>
+      data.memberProvidedFields.includes(field);
+    return {
+      bearer: isMemberProvided(AgentVaultVariableReferenceField.CredentialValue)
+        ? [AgentVaultVariableReferenceField.CredentialValue as const]
+        : [],
+      basic: (
+        [
+          AgentVaultVariableReferenceField.CredentialUsername,
+          AgentVaultVariableReferenceField.CredentialValue
+        ] as TAgentVaultMemberProvidedField[]
+      ).filter(isMemberProvided),
+      isMemberProvided
+    };
+  };
+
+  // A member-provided field is sent without a value: each member sets their own.
   const buildCredential = (data: TServiceForm) => {
+    const { bearer, basic, isMemberProvided } = memberFieldsOf(data);
     if (data.credentialType === AgentVaultCredentialType.Passthrough) {
       return { type: AgentVaultCredentialType.Passthrough as const };
     }
     if (data.credentialType === AgentVaultCredentialType.Basic) {
       return {
         type: AgentVaultCredentialType.Basic as const,
-        username: data.username ?? "",
-        password: data.secret ?? ""
+        username: isMemberProvided(AgentVaultVariableReferenceField.CredentialUsername)
+          ? undefined
+          : (data.username ?? ""),
+        password: isMemberProvided(AgentVaultVariableReferenceField.CredentialValue)
+          ? undefined
+          : (data.secret ?? ""),
+        memberProvidedFields: basic
       };
     }
     return {
       type: AgentVaultCredentialType.Bearer as const,
       headerName: data.headerName || undefined,
       headerPrefix: data.headerPrefix ?? "",
-      value: data.secret ?? ""
+      value: bearer.length ? undefined : (data.secret ?? ""),
+      memberProvidedFields: bearer
     };
   };
 
   const buildCredentialPatch = (data: TServiceForm) => {
+    const { bearer, basic, isMemberProvided } = memberFieldsOf(data);
     if (data.credentialType === AgentVaultCredentialType.Passthrough) {
       return { type: AgentVaultCredentialType.Passthrough as const };
     }
@@ -361,15 +436,24 @@ export const ServiceSheet = ({
     if (data.credentialType === AgentVaultCredentialType.Basic) {
       return {
         type: AgentVaultCredentialType.Basic as const,
-        username: data.username === UNCHANGED_SECRET ? undefined : (data.username ?? ""),
-        password: untouched ? undefined : (data.secret ?? "")
+        username:
+          isMemberProvided(AgentVaultVariableReferenceField.CredentialUsername) ||
+          data.username === UNCHANGED_SECRET
+            ? undefined
+            : (data.username ?? ""),
+        password:
+          isMemberProvided(AgentVaultVariableReferenceField.CredentialValue) || untouched
+            ? undefined
+            : (data.secret ?? ""),
+        memberProvidedFields: basic
       };
     }
     return {
       type: AgentVaultCredentialType.Bearer as const,
       headerName: data.headerName || "Authorization",
       headerPrefix: data.headerPrefix ?? "",
-      value: untouched || !data.secret ? undefined : data.secret
+      value: bearer.length || untouched || !data.secret ? undefined : data.secret,
+      memberProvidedFields: bearer
     };
   };
 
@@ -612,12 +696,21 @@ export const ServiceSheet = ({
                   {current.step === ServiceStep.Credential && (
                     <ServiceVariablesContext.Provider value={serviceVariables}>
                       <div className="flex flex-col gap-5">
-                        <CredentialFields storedType={service?.credential.type} />
+                        <CredentialFields
+                          storedType={service?.credential.type}
+                          storedMemberFields={storedMemberFields(service)}
+                        />
                         <TransformationsFields openItem={openItem} onOpenChange={setOpenItem} />
                       </div>
                     </ServiceVariablesContext.Provider>
                   )}
-                  {current.step === ServiceStep.Review && <ReviewFields isUpdate={isUpdate} />}
+                  {current.step === ServiceStep.Review && (
+                    <ReviewFields
+                      isUpdate={isUpdate}
+                      storedType={service?.credential.type}
+                      storedMemberFields={storedMemberFields(service)}
+                    />
+                  )}
                 </div>
 
                 <aside className="hidden w-80 shrink-0 flex-col gap-4 overflow-y-auto border-l border-border px-6 py-6 lg:flex">
@@ -671,9 +764,7 @@ export const ServiceSheet = ({
           onOpenChange={(open) => {
             if (!open) setNewVariableKey(null);
           }}
-          accessBundleId={accessBundleId}
           initialKey={newVariableKey ?? undefined}
-          existingKeys={variableKeys ?? []}
           onCreated={(variable) => {
             if (newVariableRequest.current) newVariableRequest.current.created = variable;
           }}

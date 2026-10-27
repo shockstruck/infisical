@@ -52,6 +52,7 @@ import {
 } from "../pam/pam-permission";
 import { resolveAccessControls } from "../pam/pam-policies";
 import {
+  getInheritedRecordingS3Config,
   mintCorsProbeUrl,
   resolveOverridesS3Config,
   validateGatewayAttachment,
@@ -402,12 +403,26 @@ export const pamAccountServiceFactory = (deps: TPamAccountServiceFactoryDep) => 
 
     return accounts.map((a, idx) => {
       const { accessibilityIssues, isAccessible } = computeAccessibility(a);
-      const { requiresApproval, requireReason, allowBreakGlass } = resolveAccessControls(a.templatePolicies);
-      if (requiresApproval && a.folderId && !foldersWithApprovalPolicy.has(a.folderId)) {
-        accessibilityIssues.push(PamAccountAccessibilityIssue.NoApprovalConfig);
-      }
+      const { requiresApproval, requireReason, allowBreakGlass, allowAutoApproval } = resolveAccessControls(
+        a.templatePolicies
+      );
       const statusEntry = accessStatusMap.get(a.id);
       const credentialStatusEntry = credentialAccessStatusMap.get(a.id);
+      const canBreakGlass = allowBreakGlass && !!a.folderId && breakGlassFolders.has(a.folderId);
+      const hasGrant =
+        statusEntry?.accessStatus === ApprovalAccessStatus.Granted ||
+        credentialStatusEntry?.accessStatus === ApprovalAccessStatus.Granted;
+      // Break-glass users and current grant holders can still reach a folder whose approvers and rules can't
+      // grant this account; only new requests are blocked
+      if (
+        requiresApproval &&
+        a.folderId &&
+        !canBreakGlass &&
+        !hasGrant &&
+        !foldersWithApprovalPolicy.isConfiguredFor(a.folderId, allowAutoApproval)
+      ) {
+        accessibilityIssues.push(PamAccountAccessibilityIssue.NoApprovalConfig);
+      }
       return {
         id: a.id,
         name: a.name,
@@ -435,7 +450,7 @@ export const pamAccountServiceFactory = (deps: TPamAccountServiceFactoryDep) => 
           : ApprovalAccessStatus.None,
         grantExpiresAt: statusEntry?.grantExpiresAt ?? null,
         pendingRequestId: statusEntry?.pendingRequestId ?? null,
-        canBreakGlass: allowBreakGlass && !!a.folderId && breakGlassFolders.has(a.folderId),
+        canBreakGlass,
         credentialAccessStatus: requiresApproval
           ? (credentialStatusEntry?.accessStatus ?? ApprovalAccessStatus.None)
           : ApprovalAccessStatus.None,
@@ -744,7 +759,8 @@ export const pamAccountServiceFactory = (deps: TPamAccountServiceFactoryDep) => 
       deps,
       settingsOverrides,
       recordingConnectionId ?? template.recordingConnectionId,
-      ctx
+      ctx,
+      recordingConnectionId ? getInheritedRecordingS3Config(settingsOverrides, template.settings) : undefined
     );
 
     const forced = applyForcedFields(accountType, {
@@ -939,7 +955,13 @@ export const pamAccountServiceFactory = (deps: TPamAccountServiceFactoryDep) => 
       settingsOverrides,
       (recordingConnectionId !== undefined ? recordingConnectionId : existing.recordingConnectionId) ??
         existing.templateRecordingConnectionId,
-      ctx
+      ctx,
+      recordingConnectionId
+        ? getInheritedRecordingS3Config(
+            settingsOverrides === undefined ? existing.settingsOverrides : settingsOverrides,
+            template ? template.settings : existing.templateSettings
+          )
+        : undefined
     );
 
     const updateData: Record<string, unknown> = {};
@@ -1315,11 +1337,15 @@ export const pamAccountServiceFactory = (deps: TPamAccountServiceFactoryDep) => 
 
     return {
       accounts: accounts.map((a) => {
-        const { requiresApproval, requireReason, requireMfa, allowBreakGlass } = resolveAccessControls(
-          a.templatePolicies
-        );
+        const { requiresApproval, requireReason, requireMfa, allowBreakGlass, allowAutoApproval } =
+          resolveAccessControls(a.templatePolicies);
         const statusEntry = accessStatusMap.get(a.id);
-        const hasPolicyConfigured = a.folderId ? foldersWithApprovalPolicy.has(a.folderId) : false;
+        const canBreakGlass = allowBreakGlass && !!a.folderId && breakGlassFolders.has(a.folderId);
+        const hasPolicyConfigured = a.folderId
+          ? canBreakGlass ||
+            statusEntry?.accessStatus === ApprovalAccessStatus.Granted ||
+            foldersWithApprovalPolicy.isConfiguredFor(a.folderId, allowAutoApproval)
+          : false;
         let disabledReason: string | null = null;
         if (requiresApproval && !hasPolicyConfigured) {
           disabledReason =
@@ -1346,7 +1372,7 @@ export const pamAccountServiceFactory = (deps: TPamAccountServiceFactoryDep) => 
             : ApprovalAccessStatus.None,
           grantExpiresAt: statusEntry?.grantExpiresAt ?? null,
           pendingRequestId: statusEntry?.pendingRequestId ?? null,
-          canBreakGlass: allowBreakGlass && !!a.folderId && breakGlassFolders.has(a.folderId),
+          canBreakGlass,
           disabledReason,
           createdAt: a.createdAt,
           updatedAt: a.updatedAt

@@ -137,6 +137,7 @@ import { herokuConnectionService } from "./heroku/heroku-connection-service";
 import { ValidateHpeIloConnectionCredentialsSchema } from "./hpe-ilo";
 import { ValidateHumanitecConnectionCredentialsSchema } from "./humanitec";
 import { humanitecConnectionService } from "./humanitec/humanitec-connection-service";
+import { ValidateJiraConnectionCredentialsSchema } from "./jira";
 import { ValidateKeeperConnectionCredentialsSchema } from "./keeper";
 import { keeperConnectionService } from "./keeper/keeper-connection-service";
 import { ValidateKempLoadMasterConnectionCredentialsSchema } from "./kemp-loadmaster";
@@ -188,6 +189,7 @@ import { ValidateRenderConnectionCredentialsSchema } from "./render/render-conne
 import { renderConnectionService } from "./render/render-connection-service";
 import { ValidateRundeckConnectionCredentialsSchema } from "./rundeck";
 import { rundeckConnectionService } from "./rundeck/rundeck-connection-service";
+import { ValidateS3CompatibleConnectionCredentialsSchema } from "./s3-compatible";
 import { ValidateSalesforceConnectionCredentialsSchema } from "./salesforce";
 import { salesforceConnectionService } from "./salesforce/salesforce-connection-service";
 import { ValidateSmbConnectionCredentialsSchema } from "./smb";
@@ -335,7 +337,9 @@ const VALIDATE_APP_CONNECTION_CREDENTIALS_MAP: Record<AppConnection, TValidateAp
   [AppConnection.Daytona]: ValidateDaytonaConnectionCredentialsSchema,
   [AppConnection.Stripe]: ValidateStripeConnectionCredentialsSchema,
   [AppConnection.Keeper]: ValidateKeeperConnectionCredentialsSchema,
-  [AppConnection.HpeIloRedFish]: ValidateHpeIloConnectionCredentialsSchema
+  [AppConnection.HpeIloRedFish]: ValidateHpeIloConnectionCredentialsSchema,
+  [AppConnection.S3Compatible]: ValidateS3CompatibleConnectionCredentialsSchema,
+  [AppConnection.Jira]: ValidateJiraConnectionCredentialsSchema
 };
 
 export const appConnectionServiceFactory = ({
@@ -1207,6 +1211,22 @@ export const appConnectionServiceFactory = ({
         err instanceof DatabaseError &&
         (err.error as { code: string })?.code === DatabaseErrorCode.ForeignKeyViolation
       ) {
+        const { constraint } = err.error as { constraint?: string };
+        if (
+          constraint === "approval_policy_auto_approval_inputs_connectionid_foreign" ||
+          constraint === "approval_policy_auto_approval_conditions_connectionid_foreign"
+        ) {
+          throw new BadRequestError({
+            message:
+              "Cannot delete this App Connection because one or more approval policies use it in their auto-approval rules. Remove it from those rules first."
+          });
+        }
+        if (constraint === "certificate_authority_secret_appconnectionid_foreign") {
+          throw new BadRequestError({
+            message:
+              "Cannot delete this App Connection because a certificate authority signs with an AWS KMS key reached through it. Delete that certificate authority first."
+          });
+        }
         throw new BadRequestError({
           message:
             "Cannot delete App Connection with existing connections. Remove all existing connections and try again."

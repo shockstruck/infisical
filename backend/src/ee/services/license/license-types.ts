@@ -114,6 +114,8 @@ export type TFeatureSet = {
   honeyTokenLimit: number;
   secretsBrokering: boolean;
   agentVaultByoS3: boolean;
+  agentVaultManagedStorage: boolean;
+  agentVaultSessionLogRetentionDays: number | null;
   secretSyncLimit: null;
   maxPamAccounts: null;
 
@@ -126,6 +128,7 @@ export type TFeatureSet = {
   // withholds it on cloud.
   caCrl: boolean;
   pkiOcsp: boolean;
+  pkiAwsKmsSigning: boolean;
   pkiEnterpriseCaIntegrations: boolean;
   pkiExternalIntermediateCa: boolean;
   pkiDiscovery: boolean;

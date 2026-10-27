@@ -8,19 +8,38 @@ import {
 } from "../agent-vault/agent-vault-enums";
 import { TAgentVaultAccessBundleOrderBy } from "./agent-vault-access-bundle-dal";
 
+export type TAgentVaultBearerMemberField = AgentVaultVariableReferenceField.CredentialValue;
+export type TAgentVaultBasicMemberField =
+  | AgentVaultVariableReferenceField.CredentialUsername
+  | AgentVaultVariableReferenceField.CredentialValue;
+
+// A member-provided field never carries a value here: each member sends their own.
 export type TAgentVaultCredentialInput =
-  | { type: AgentVaultCredentialType.Bearer; headerName?: string; headerPrefix?: string; value: string }
-  | { type: AgentVaultCredentialType.Basic; username: string; password: string }
+  | {
+      type: AgentVaultCredentialType.Bearer;
+      headerName?: string;
+      headerPrefix?: string;
+      value?: string;
+      memberProvidedFields?: TAgentVaultBearerMemberField[];
+    }
+  | {
+      type: AgentVaultCredentialType.Basic;
+      username?: string;
+      password?: string;
+      memberProvidedFields?: TAgentVaultBasicMemberField[];
+    }
   | { type: AgentVaultCredentialType.Passthrough };
 
-export type TAgentVaultCredentialUpdate =
-  | { type: AgentVaultCredentialType.Bearer; headerName?: string; headerPrefix?: string; value?: string }
-  | { type: AgentVaultCredentialType.Basic; username?: string; password?: string }
-  | { type: AgentVaultCredentialType.Passthrough };
+export type TAgentVaultCredentialUpdate = TAgentVaultCredentialInput;
 
 export type TAgentVaultCredentialSummary =
-  | { type: AgentVaultCredentialType.Bearer; headerName: string; headerPrefix: string }
-  | { type: AgentVaultCredentialType.Basic }
+  | {
+      type: AgentVaultCredentialType.Bearer;
+      headerName: string;
+      headerPrefix: string;
+      memberProvidedFields: TAgentVaultBearerMemberField[];
+    }
+  | { type: AgentVaultCredentialType.Basic; memberProvidedFields: TAgentVaultBasicMemberField[] }
   | { type: AgentVaultCredentialType.Passthrough };
 
 export type TAgentVaultVariableReferenceSummary = { variableId: string; key: string } & (
@@ -32,6 +51,8 @@ export type TAgentVaultVariableReferenceSummary = { variableId: string; key: str
 export type TAgentVaultProjectScoped = { projectId: string; ctx: TGenericPermission };
 
 export type TListAccessBundlesDTO = TAgentVaultProjectScoped & {
+  requiresSetup?: boolean;
+  granted?: boolean;
   search?: string;
   orderBy: TAgentVaultAccessBundleOrderBy;
   orderDirection: "asc" | "desc";
@@ -100,23 +121,6 @@ export type TDeleteServiceDTO = TAgentVaultProjectScoped & {
   accessBundleId: string;
   serviceId: string;
 };
-
-export type TListVariablesDTO = TAgentVaultProjectScoped & { accessBundleId: string };
-
-export type TCreateVariableDTO = TAgentVaultProjectScoped & {
-  accessBundleId: string;
-  key: string;
-  value: string;
-};
-
-export type TUpdateVariableDTO = TAgentVaultProjectScoped & {
-  accessBundleId: string;
-  variableId: string;
-  key?: string;
-  value?: string;
-};
-
-export type TVariableByIdDTO = TAgentVaultProjectScoped & { accessBundleId: string; variableId: string };
 
 export type TListMembersDTO = TAgentVaultProjectScoped & {
   accessBundleId: string;

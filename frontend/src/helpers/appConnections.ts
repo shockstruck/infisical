@@ -74,6 +74,7 @@ import { GoDaddyConnectionMethod } from "@app/hooks/api/appConnections/types/god
 import { HasuraCloudConnectionMethod } from "@app/hooks/api/appConnections/types/hasura-cloud-connection";
 import { HerokuConnectionMethod } from "@app/hooks/api/appConnections/types/heroku-connection";
 import { HpeIloConnectionMethod } from "@app/hooks/api/appConnections/types/hpe-ilo-connection";
+import { JiraConnectionMethod } from "@app/hooks/api/appConnections/types/jira-connection";
 import { KeeperConnectionMethod } from "@app/hooks/api/appConnections/types/keeper-connection";
 import { KempLoadMasterConnectionMethod } from "@app/hooks/api/appConnections/types/kemp-loadmaster-connection";
 import { LaravelForgeConnectionMethod } from "@app/hooks/api/appConnections/types/laravel-forge-connection";
@@ -94,6 +95,7 @@ import { PowerDnsConnectionMethod } from "@app/hooks/api/appConnections/types/po
 import { RailwayConnectionMethod } from "@app/hooks/api/appConnections/types/railway-connection";
 import { RenderConnectionMethod } from "@app/hooks/api/appConnections/types/render-connection";
 import { RundeckConnectionMethod } from "@app/hooks/api/appConnections/types/rundeck-connection";
+import { S3CompatibleConnectionMethod } from "@app/hooks/api/appConnections/types/s3-compatible-connection";
 import { SalesforceConnectionMethod } from "@app/hooks/api/appConnections/types/salesforce-connection";
 import { SmbConnectionMethod } from "@app/hooks/api/appConnections/types/smb-connection";
 import { SnowflakeConnectionMethod } from "@app/hooks/api/appConnections/types/snowflake-connection";
@@ -680,8 +682,73 @@ export const APP_CONNECTION_MAP: Record<
     image: "Daytona.png",
     category: "PLATFORM",
     description: "Organization secret access for Daytona sandboxes."
+  },
+  [AppConnection.S3Compatible]: {
+    name: "S3-Compatible Storage",
+    image: "S3 Compatible.svg",
+    aliases: ["aws s3", "cloudflare r2", "google cloud storage", "gcs", "oracle", "oci"],
+    category: "STORAGE",
+    description: "Connect to AWS S3, Cloudflare R2, Google Cloud Storage or OCI Object Storage."
+  },
+  [AppConnection.Jira]: {
+    name: "Jira",
+    image: "Jira.svg",
+    category: "PRODUCTIVITY",
+    description: "Atlassian Jira Cloud and Data Center."
   }
 };
+
+const S3_COMPATIBLE_PROVIDERS = [
+  { name: "AWS S3", hostname: /^s3\.[a-z0-9-]+\.amazonaws\.com$/ },
+  { name: "Cloudflare R2", hostname: /^[a-f0-9]{32}(\.[a-z]+)?\.r2\.cloudflarestorage\.com$/ },
+  { name: "Google Cloud Storage", hostname: /^storage\.googleapis\.com$/ },
+  {
+    name: "OCI Object Storage",
+    hostname:
+      /^[a-z0-9-]+\.compat\.objectstorage\.[a-z0-9-]+\.(oraclecloud\.com|oci\.customer-oci\.com)$/
+  }
+];
+
+const STORAGE_HOSTNAME_REGEX = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?$/;
+
+export const isStorageHostname = (hostname: string) => {
+  if (!STORAGE_HOSTNAME_REGEX.test(hostname)) return false;
+  try {
+    return new URL(`https://${hostname}`).host === hostname;
+  } catch {
+    return false;
+  }
+};
+
+export const getS3CompatibleProviderName = (
+  endpoint: string,
+  allowedStorageHostnames: string[] = []
+) => {
+  try {
+    const url = new URL(endpoint);
+    if (
+      url.protocol !== "https:" ||
+      url.username ||
+      url.pathname !== "/" ||
+      url.search ||
+      url.hash
+    ) {
+      return null;
+    }
+    const providerName = url.port
+      ? undefined
+      : S3_COMPATIBLE_PROVIDERS.find(({ hostname }) => hostname.test(url.hostname))?.name;
+    if (providerName) return providerName;
+    return allowedStorageHostnames.includes(url.host) ? url.host : null;
+  } catch {
+    return null;
+  }
+};
+
+export const getAppConnectionProviderName = (connection: TAppConnection) =>
+  (connection.app === AppConnection.S3Compatible &&
+    getS3CompatibleProviderName(connection.credentials.endpoint)) ||
+  APP_CONNECTION_MAP[connection.app].name;
 
 export const POPULAR_APP_CONNECTIONS: AppConnection[] = [
   AppConnection.AWS,
@@ -699,6 +766,7 @@ export const getAppConnectionMethodDetails = (method: TAppConnection["method"]) 
       return { name: "GitHub App", icon: GithubIcon };
     case GitHubConnectionMethod.Pat:
     case OnaConnectionMethod.PersonalAccessToken:
+    case JiraConnectionMethod.PersonalAccessToken:
       return { name: "Personal Access Token", icon: KeyRoundIcon };
     case AzureKeyVaultConnectionMethod.OAuth:
     case AzureAppConfigurationConnectionMethod.OAuth:
@@ -712,6 +780,7 @@ export const getAppConnectionMethodDetails = (method: TAppConnection["method"]) 
       return { name: "OAuth", icon: IdCardIcon };
     case AwsConnectionMethod.AccessKey:
     case OCIConnectionMethod.AccessKey:
+    case S3CompatibleConnectionMethod.AccessKey:
       return { name: "Access Key", icon: KeyRoundIcon };
     case AwsConnectionMethod.AssumeRole:
       return { name: "Assume Role", icon: UserIcon };
@@ -738,6 +807,7 @@ export const getAppConnectionMethodDetails = (method: TAppConnection["method"]) 
     case DopplerConnectionMethod.ApiToken:
     case RundeckConnectionMethod.ApiToken:
     case PortainerConnectionMethod.ApiToken:
+    case JiraConnectionMethod.ApiToken:
       return { name: "API Token", icon: KeyRoundIcon };
     case VenafiConnectionMethod.ApiKey:
       return { name: "API Key", icon: KeyRoundIcon };

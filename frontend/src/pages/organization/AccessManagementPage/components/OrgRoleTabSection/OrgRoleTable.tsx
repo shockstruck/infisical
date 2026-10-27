@@ -27,7 +27,7 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
-  DeleteConfirmDialog,
+  ConfirmationAlertDialog,
   DocumentationLinkBadge,
   DropdownMenu,
   DropdownMenuContent,
@@ -42,6 +42,7 @@ import {
   InputGroupAddon,
   InputGroupInput,
   Pagination,
+  RowLink,
   Skeleton,
   Table,
   TableBody,
@@ -321,25 +322,18 @@ export const OrgRoleTable = () => {
                         ? id === currentOrg?.defaultMembershipRole
                         : slug === currentOrg?.defaultMembershipRole;
                       return (
-                        <TableRow
-                          key={`role-list-${id}`}
-                          className="cursor-pointer"
-                          onClick={() =>
-                            navigate({
-                              to: "/organizations/$orgId/roles/$roleId",
-                              params: {
-                                roleId: id,
-                                orgId
-                              }
-                            })
-                          }
-                        >
+                        <TableRow key={`role-list-${id}`} linked>
                           <TableCell isTruncatable>
                             <div className="flex gap-x-1.5">
-                              <p className="truncate">{name}</p>
+                              <RowLink
+                                to="/organizations/$orgId/roles/$roleId"
+                                params={{ roleId: id, orgId }}
+                              >
+                                {name}
+                              </RowLink>
                               {isDefaultOrgRole && (
                                 <Tooltip>
-                                  <TooltipTrigger asChild>
+                                  <TooltipTrigger asChild data-row-interactive>
                                     <Badge variant="info">Default</Badge>
                                   </TooltipTrigger>
                                   <TooltipContent>
@@ -503,7 +497,7 @@ export const OrgRoleTable = () => {
         </CardContent>
       </Card>
       <RoleModal popUp={popUp} handlePopUpToggle={handlePopUpToggle} />
-      <DeleteConfirmDialog
+      <ConfirmationAlertDialog
         isOpen={popUp.deleteRole.isOpen}
         title={`Are you sure you want to delete ${
           (popUp?.deleteRole?.data as TOrgRole)?.name || " "

@@ -123,7 +123,7 @@ import { TSecretVersionV2DALFactory } from "./secret-version-dal";
 import { TSecretVersionV2TagDALFactory } from "./secret-version-tag-dal";
 
 type SecretMetricOp = {
-  duration: "read" | "write" | "delete";
+  duration: "read" | "write";
   write?: "create" | "update" | "delete";
 };
 
@@ -2407,11 +2407,13 @@ export const secretV2BridgeServiceFactory = ({
     mode: updateMode,
     tx: providedTx,
     commitChanges,
-    skipPostProcessing = false
+    skipPostProcessing = false,
+    deferredReferenceSyncs
   }: TUpdateManySecretDTO & {
     tx?: Knex;
     commitChanges?: TCommitResourceChangeDTO[];
     skipPostProcessing?: boolean;
+    deferredReferenceSyncs?: Parameters<TSecretQueueFactory["syncSecrets"]>[0][];
   }) => {
     const { permission, hasProjectEnforcement } = await permissionService.getProjectPermission({
       actor,
@@ -2442,7 +2444,7 @@ export const secretV2BridgeServiceFactory = ({
       secretsToUpdateGroupByPath[path] = Array.from(seen.values());
     }
 
-    const projectEnvironment = await projectEnvDAL.findOne({ projectId, slug: environment });
+    const projectEnvironment = await projectEnvDAL.findOne({ projectId, slug: environment }, providedTx);
     if (!projectEnvironment) {
       throw new NotFoundError({
         message: `Environment with slug '${environment}' in project with ID '${projectId}' not found`
@@ -2450,12 +2452,13 @@ export const secretV2BridgeServiceFactory = ({
     }
 
     const folders = await folderDAL.findByManySecretPath(
-      Object.keys(secretsToUpdateGroupByPath).map((el) => ({ envId: projectEnvironment.id, secretPath: el }))
+      Object.keys(secretsToUpdateGroupByPath).map((el) => ({ envId: projectEnvironment.id, secretPath: el })),
+      providedTx
     );
     const secretPaths = Object.keys(secretsToUpdateGroupByPath);
 
     const { encryptor: secretManagerEncryptor, decryptor: secretManagerDecryptor } =
-      await kmsService.createCipherPairWithDataKey({ type: KmsDataKey.SecretManager, projectId });
+      await kmsService.createCipherPairWithDataKey({ type: KmsDataKey.SecretManager, projectId }, providedTx);
     const blindIndexer = await createSecretBlindIndexer({
       projectId,
       orgId: actorOrgId,
@@ -2765,7 +2768,8 @@ export const secretV2BridgeServiceFactory = ({
               encryptor: ({ plainText }) => secretManagerEncryptor({ plainText }),
               decryptor: ({ cipherTextBlob }) => secretManagerDecryptor({ cipherTextBlob }),
               blindIndexer,
-              tx
+              tx,
+              deferredSyncs: deferredReferenceSyncs
             });
           }
         }
@@ -2914,8 +2918,13 @@ export const secretV2BridgeServiceFactory = ({
     actorAuthMethod,
     actorOrgId,
     tx: providedTx,
-    commitChanges
-  }: TDeleteManySecretDTO & { tx?: Knex; commitChanges?: TCommitResourceChangeDTO[] }) => {
+    commitChanges,
+    skipPostProcessing = false
+  }: TDeleteManySecretDTO & {
+    tx?: Knex;
+    commitChanges?: TCommitResourceChangeDTO[];
+    skipPostProcessing?: boolean;
+  }) => {
     const { permission } = await permissionService.getProjectPermission({
       actor,
       actorId,
@@ -2997,29 +3006,34 @@ export const secretV2BridgeServiceFactory = ({
         ? await executeBulkDelete(providedTx)
         : await secretDAL.transaction(executeBulkDelete);
 
-      await secretQueueService.syncSecrets({
-        actor,
-        actorId,
-        secretPath,
-        projectId,
-        orgId: actorOrgId,
-        environmentSlug: folder.environment.slug,
-        environmentName: folder.environment.name,
-        events: [
-          {
-            type: ProjectEvents.SecretDelete,
-            secretKeys: secretsDeleted.map((sec) => sec.key),
-            projectId,
-            secretPath,
-            environment
-          }
-        ]
-      });
+      if (!skipPostProcessing) {
+        await secretQueueService.syncSecrets({
+          actor,
+          actorId,
+          secretPath,
+          projectId,
+          orgId: actorOrgId,
+          environmentSlug: folder.environment.slug,
+          environmentName: folder.environment.name,
+          events: [
+            {
+              type: ProjectEvents.SecretDelete,
+              secretKeys: secretsDeleted.map((sec) => sec.key),
+              projectId,
+              secretPath,
+              environment
+            }
+          ]
+        });
+      }
 
-      const { decryptor: secretManagerDecryptor } = await kmsService.createCipherPairWithDataKey({
-        type: KmsDataKey.SecretManager,
-        projectId
-      });
+      const { decryptor: secretManagerDecryptor } = await kmsService.createCipherPairWithDataKey(
+        {
+          type: KmsDataKey.SecretManager,
+          projectId
+        },
+        providedTx
+      );
       return secretsDeleted.map((el) => {
         const secretToDeleteMatch = secretsToDelete.find(
           (i) => i.key === el.key && (i.type || SecretType.Shared) === el.type
@@ -4032,11 +4046,11 @@ export const secretV2BridgeServiceFactory = ({
 
   return {
     createSecret: withSecretMetrics(createSecret, { duration: "write", write: "create" }),
-    deleteSecret: withSecretMetrics(deleteSecret, { duration: "delete", write: "delete" }),
+    deleteSecret: withSecretMetrics(deleteSecret, { duration: "write", write: "delete" }),
     updateSecret: withSecretMetrics(updateSecret, { duration: "write", write: "update" }),
     createManySecret: withSecretMetrics(createManySecret, { duration: "write", write: "create" }),
     updateManySecret: withSecretMetrics(updateManySecret, { duration: "write", write: "update" }),
-    deleteManySecret: withSecretMetrics(deleteManySecret, { duration: "delete", write: "delete" }),
+    deleteManySecret: withSecretMetrics(deleteManySecret, { duration: "write", write: "delete" }),
     getSecrets: withSecretMetrics(getSecrets, { duration: "read" }),
     getSecretByName,
     getSecretVersions,
