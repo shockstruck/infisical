@@ -43,6 +43,17 @@ tables:
       - createdAt
       - updatedAt
 
+  - name: agent_vault_personal_values
+    source: public.agent_vault_personal_values
+    columns:
+      - id
+      - serviceId
+      - field
+      - userId
+      - identityId
+      - createdAt
+      - updatedAt
+
   - name: agent_vault_proxies
     source: public.agent_vault_proxies
     columns:
@@ -78,6 +89,7 @@ tables:
       - credentialType
       - allowedMethods
       - allowedPathPrefixes
+      - memberProvidedFields
       - createdAt
       - updatedAt
 
@@ -95,6 +107,7 @@ tables:
       - id
       - projectId
       - enabled
+      - storageType
       - createdAt
       - updatedAt
 
@@ -115,6 +128,9 @@ tables:
     source: public.agent_vault_variables
     columns:
       - id
+      - projectId
+      - userId
+      - identityId
       - accessBundleId
       - createdAt
       - updatedAt
@@ -1119,6 +1135,9 @@ tables:
       - createdAt
       - updatedAt
       - isDisconnected
+      - isHistoricalScanEnabled
+      - isScanNewCommitsEnabled
+      - isDiscoveryEnabled
 
   - name: secret_scanning_findings
     source: public.secret_scanning_findings
@@ -1339,3 +1358,16 @@ tables:
       - orgId
       - projectId
       - projectName
+
+  - name: audit_log_streams
+    source: public.audit_log_streams
+    columns:
+      - id
+      - orgId
+      - createdAt
+      - updatedAt
+      - provider
+      - streamMode
+      - filters
+      - failingSince
+      - lastDeliveryError

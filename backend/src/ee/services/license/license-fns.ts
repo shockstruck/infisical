@@ -110,6 +110,9 @@ export const getDefaultOnPremFeatures = (): TFeatureSet => ({
   honeyTokenLimit: 0,
   secretsBrokering: true,
   agentVaultByoS3: false,
+  // On by default, like secretsBrokering, until the License Server sets it per plan.
+  agentVaultManagedStorage: true,
+  agentVaultSessionLogRetentionDays: 30,
   secretSyncLimit: null,
   maxPamAccounts: null,
   // PKI / Cert Manager
@@ -119,6 +122,7 @@ export const getDefaultOnPremFeatures = (): TFeatureSet => ({
   pkiPqc: false,
   caCrl: true,
   pkiOcsp: false,
+  pkiAwsKmsSigning: false,
   pkiEnterpriseCaIntegrations: false,
   pkiExternalIntermediateCa: false,
   pkiDiscovery: false,
@@ -173,6 +177,7 @@ export const getInstanceEnterpriseModeFeatures = (): TFeatureSet => ({
   pkiScep: true,
   pkiPqc: true,
   pkiOcsp: true,
+  pkiAwsKmsSigning: true,
   pkiEnterpriseCaIntegrations: true,
   pkiExternalIntermediateCa: true,
   pkiDiscovery: true,

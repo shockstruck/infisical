@@ -40,6 +40,7 @@ export enum ApiErrorTypes {
   ValidationError = "ValidationFailure",
   PermissionBoundaryError = "PermissionBoundaryError",
   BadRequestError = "BadRequest",
+  ConflictError = "Conflict",
   UnauthorizedError = "UnauthorizedError",
   ForbiddenError = "PermissionDenied",
   CustomForbiddenError = "ForbiddenError",
@@ -77,6 +78,7 @@ export type TApiErrors =
       statusCode: 400;
       message: string;
       error: ApiErrorTypes.BadRequestError;
+      details?: unknown;
     }
   | {
       reqId: string;

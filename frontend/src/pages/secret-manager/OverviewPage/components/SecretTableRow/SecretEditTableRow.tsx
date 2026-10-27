@@ -46,7 +46,7 @@ import {
   AlertDialogMedia,
   AlertDialogTitle,
   Badge,
-  DeleteConfirmDialog,
+  ConfirmationAlertDialog,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -110,6 +110,7 @@ import {
 } from "../tableRowActionStyles";
 import { SecretAccessInsights } from "./SecretAccessInsights";
 import { SecretCommentForm } from "./SecretCommentForm";
+import { SecretLastEditedTime } from "./SecretLastEditedTime";
 import { SecretMetadataForm } from "./SecretMetadataForm";
 import { SecretReminderForm } from "./SecretReminderForm";
 import { SecretTagForm } from "./SecretTagForm";
@@ -176,6 +177,7 @@ type Props = {
   isPendingCreate?: boolean;
   isPendingDelete?: boolean;
   onBatchRevert?: (env: string, key: string) => void;
+  onPendingSave?: (env: string, key: string, pendingChangeId?: string) => Promise<void>;
   hasPendingChange?: boolean;
   hasPendingValueChange?: boolean;
   pendingKeyName?: string;
@@ -183,6 +185,8 @@ type Props = {
   onCopySecret?: () => void;
   onAccessInsightsUpgrade: (onGranted: () => void) => void;
   onExpandedChange?: (isExpanded: boolean) => void;
+  lastEdited?: Pick<SecretV3RawSanitized, "createdAt" | "updatedAt" | "version">;
+  timestampField?: "createdAt" | "updatedAt";
 };
 
 export const SecretEditTableRow = ({
@@ -216,7 +220,10 @@ export const SecretEditTableRow = ({
   isBatchMode,
   isPendingCreate,
   isPendingDelete,
+  lastEdited,
+  timestampField,
   onBatchRevert,
+  onPendingSave,
   hasPendingChange,
   hasPendingValueChange,
   pendingKeyName,
@@ -226,7 +233,7 @@ export const SecretEditTableRow = ({
   onExpandedChange
 }: Props) => {
   const telemetry = useOverviewTelemetry();
-  const valueSheetFlow = useRef<OverviewFlowHandle>();
+  const valueSheetFlow = useRef<OverviewFlowHandle>(undefined);
   const valueSheetOwner = useRef({});
   const { handlePopUpOpen, handlePopUpToggle, handlePopUpClose, popUp } = usePopUp([
     "editSecret",
@@ -349,6 +356,7 @@ export const SecretEditTableRow = ({
   const { mutateAsync: updateSecretV3, isPending: isUpdatingMultiline } = useUpdateSecretV3();
 
   const [isDeleting, setIsDeleting] = useToggle();
+  const [isSavingPendingChange, setIsSavingPendingChange] = useToggle();
   const [isEditing, setIsEditing] = useToggle();
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [isCommentOpen, setIsCommentOpen] = useState(false);
@@ -477,7 +485,8 @@ export const SecretEditTableRow = ({
     | undefined;
   // Serialize metadata for effect dependency since watch() returns same array ref for nested changes
   const serializedMetadata = JSON.stringify(watchedMetadata);
-  const batchAutoApplyTimer = useRef<ReturnType<typeof setTimeout>>();
+  const batchAutoApplyTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const applyBatchEditsRef = useRef<() => void>(undefined);
   const lastAppliedRef = useRef<{
     value: unknown;
     key: unknown;
@@ -519,7 +528,7 @@ export const SecretEditTableRow = ({
 
     if (!isBatchMode) return () => {};
 
-    batchAutoApplyTimer.current = setTimeout(() => {
+    applyBatchEditsRef.current = () => {
       // Skip if values haven't changed since last apply
       // Use deep comparison for tags since reset() creates new array references
       if (
@@ -691,7 +700,8 @@ export const SecretEditTableRow = ({
             }
           : {})
       });
-    }, 500);
+    };
+    batchAutoApplyTimer.current = setTimeout(() => applyBatchEditsRef.current?.(), 500);
 
     return () => {
       if (batchAutoApplyTimer.current) {
@@ -701,9 +711,26 @@ export const SecretEditTableRow = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isBatchMode, watchedValue, watchedKey, watchedComment, watchedTags, serializedMetadata]);
 
-  // Reset form when a pending change is externally discarded (e.g. CommitForm discard button
-  // or toggling batch mode off). We don't gate on isBatchMode because React batches the
-  // state updates, so isBatchMode can already be false by the time hasPendingChange flips.
+  const findPendingChangeId = () =>
+    batchStore.getState().pendingChanges.secrets.find((c) => c.secretKey === secretName)?.id;
+
+  const savePendingRow = async (knownPendingChangeId?: string) => {
+    if (!onPendingSave) return;
+    const pendingChangeId = knownPendingChangeId ?? findPendingChangeId();
+    if (batchAutoApplyTimer.current) {
+      clearTimeout(batchAutoApplyTimer.current);
+      if (!knownPendingChangeId) applyBatchEditsRef.current?.();
+    }
+    setIsSavingPendingChange.on();
+    try {
+      await onPendingSave(environment, secretName, pendingChangeId);
+    } finally {
+      setIsSavingPendingChange.off();
+    }
+  };
+
+  // Reset form when a pending change is externally discarded or saved (e.g. CommitForm discard
+  // button or this row's inline save).
   const prevHasPendingRef = useRef(hasPendingChange);
   useEffect(() => {
     if (prevHasPendingRef.current && !hasPendingChange) {
@@ -768,7 +795,12 @@ export const SecretEditTableRow = ({
 
   const handleToggleMultilineEncoding = async () => {
     if (isBatchMode) {
-      onSecretUpdate({
+      if (batchAutoApplyTimer.current) {
+        clearTimeout(batchAutoApplyTimer.current);
+        applyBatchEditsRef.current?.();
+      }
+      const pendingChangeId = findPendingChangeId() ?? secretId;
+      await onSecretUpdate({
         env: environment,
         key: secretName,
         value: undefined,
@@ -777,6 +809,7 @@ export const SecretEditTableRow = ({
         secretId,
         skipMultilineEncoding: !skipMultilineEncoding
       });
+      await savePendingRow(pendingChangeId);
       return;
     }
 
@@ -939,6 +972,7 @@ export const SecretEditTableRow = ({
     const confirmation = editConfirmation.current;
     setIsEditing.on();
     try {
+      const pendingChangeId = findPendingChangeId() ?? secretId;
       await onSecretUpdate({
         env: environment,
         key: secretName,
@@ -949,6 +983,7 @@ export const SecretEditTableRow = ({
         newSecretName: newKey,
         ...sheetChanges
       });
+      if (isBatchMode) await savePendingRow(pendingChangeId);
       if (invocation !== valueSheetFlow.current || confirmation !== editConfirmation.current)
         return;
       if (!secretValueHidden) {
@@ -1007,10 +1042,10 @@ export const SecretEditTableRow = ({
     })
   );
   const handleEditShortcut = useSecretInputActionShortcuts({
-    isActive: isDirtyState,
-    isDisabled: isSubmitting,
-    isSaveDisabled: isCreatable ? !canCreate : !canEditSecretValue,
-    onSave: submitForm,
+    isActive: isBatchMode ? isPendingBatchChange || isDirty : isDirtyState,
+    isDisabled: isSubmitting || isSavingPendingChange,
+    isSaveDisabled: isCreatable || isPendingCreate ? !canCreate : !canEditSecretValue,
+    onSave: isBatchMode ? savePendingRow : submitForm,
     onUndo: handleFormReset
   });
   // personal overrides are only visible to their owner, so describe access on the secret suffices to manage them
@@ -1083,6 +1118,11 @@ export const SecretEditTableRow = ({
     const invocation = valueSheetFlow.current;
     if (isValueSheetReadOnly || valueEditDraft?.scope !== valueEditScope) return;
     if (isBatchMode) {
+      if (batchAutoApplyTimer.current) {
+        clearTimeout(batchAutoApplyTimer.current);
+        applyBatchEditsRef.current?.();
+      }
+      const pendingChangeId = findPendingChangeId() ?? secretId;
       await onSecretUpdate({
         env: environment,
         key: secretName,
@@ -1095,6 +1135,7 @@ export const SecretEditTableRow = ({
       });
       if (invocation !== valueSheetFlow.current) return;
       resetSheetFields(changes);
+      await savePendingRow(pendingChangeId);
     } else {
       const completed = await handleFormSubmit({ value: changes.value, sheetChanges: changes });
       if (!completed) return;
@@ -1105,8 +1146,27 @@ export const SecretEditTableRow = ({
   const shouldStayExpanded =
     isCommentOpen || isTagOpen || isMetadataOpen || isReminderOpen || isDropdownOpen;
 
-  const [isHoveringActionZone, setIsHoveringActionZone] = useState(false);
-  const showMenuWhileFocused = isHoveringActionZone || shouldStayExpanded;
+  const [actionBarWidth, setActionBarWidth] = useState(0);
+  const actionBarResizeObserverRef = useRef<ResizeObserver | null>(null);
+  const actionBarRef = useCallback((node: HTMLDivElement | null) => {
+    actionBarResizeObserverRef.current?.disconnect();
+    actionBarResizeObserverRef.current = null;
+    if (!node) {
+      setActionBarWidth(0);
+      return;
+    }
+    const observer = new ResizeObserver(() => setActionBarWidth(node.offsetWidth));
+    observer.observe(node);
+    actionBarResizeObserverRef.current = observer;
+  }, []);
+
+  const isEditValueDisabled =
+    isPendingDelete ||
+    isImportedSecret ||
+    isManagedSecret ||
+    isLoadingEditValue ||
+    Boolean(revokedProjectFolderGrant) ||
+    (isCreatable ? !canCreate : !canEditSecretValue);
 
   const getTooltipContentForSecretSharing = () => {
     if (!currentProject.secretSharing) {
@@ -1132,7 +1192,7 @@ export const SecretEditTableRow = ({
         <Tooltip
           delayDuration={1000}
           skipDelayDuration={0}
-          open={isFieldFocused ? false : undefined}
+          open={isFieldFocused || !field.value ? false : undefined}
         >
           <TooltipTrigger asChild>
             <Input
@@ -1140,12 +1200,12 @@ export const SecretEditTableRow = ({
               readOnly={
                 isPendingDelete || isImportedSecret || isManagedSecret || !canEditSecretValue
               }
-              placeholder={error?.message || "Secret name"}
+              placeholder="Secret name"
               isError={Boolean(error)}
               {...field}
               value={field.value ?? ""}
               className={twMerge(
-                "field-sizing-content h-auto w-auto max-w-full truncate rounded-none border-0 bg-transparent px-0 py-0 text-foreground shadow-none placeholder:text-danger focus-visible:border-transparent focus-visible:ring-0",
+                "field-sizing-content h-auto w-auto max-w-full truncate rounded-none border-0 bg-transparent px-0 py-0 text-foreground shadow-none focus-visible:border-transparent focus-visible:ring-0",
                 isPendingDelete && "text-danger/75 line-through"
               )}
               onChange={(event) => {
@@ -1156,7 +1216,11 @@ export const SecretEditTableRow = ({
               }}
               onFocus={() => setIsFieldFocused.on()}
               onKeyDown={handleEditShortcut}
+              onScroll={(e) => {
+                if (document.activeElement !== e.currentTarget) e.currentTarget.scrollLeft = 0;
+              }}
               onBlur={(e) => {
+                e.currentTarget.scrollLeft = 0;
                 field.onBlur();
                 if (!isBatchMode && field.onChange) field.onChange(e);
                 setIsFieldFocused.off();
@@ -1205,7 +1269,7 @@ export const SecretEditTableRow = ({
 
   const valueContent = (
     <>
-      <DeleteConfirmDialog
+      <ConfirmationAlertDialog
         isOpen={isModalOpen}
         onOpenChange={setIsModalOpen}
         title={`Are you sure you want to delete ${secretName}?`}
@@ -1234,6 +1298,7 @@ export const SecretEditTableRow = ({
             isFieldActive && !isBatchMode && "pr-16",
             isFieldActive && isBatchMode && "pr-6"
           )}
+          style={isFieldActive && actionBarWidth ? { paddingRight: actionBarWidth } : undefined}
         >
           {isFieldActive && !secretValueHidden && !isCreatable && secretHasReference && (
             <ResolvedSecretValuePopover
@@ -1378,24 +1443,6 @@ export const SecretEditTableRow = ({
           )}
         </ProjectPermissionCan>
       )}
-      {isFieldActive &&
-        !(
-          isDirty &&
-          (dirtyFields.key || dirtyFields.value) &&
-          !isImportedSecret &&
-          !isBatchMode
-        ) && (
-          <div
-            className={twMerge(
-              "absolute top-0 bottom-0 z-10 flex w-8 cursor-pointer items-start justify-center",
-              isSingleEnvView ? "right-0 pt-[11px] pr-[6px]" : "-right-3 pt-[8px] pr-[12px]"
-            )}
-            onMouseEnter={() => setIsHoveringActionZone(true)}
-            onMouseLeave={() => setIsHoveringActionZone(false)}
-          >
-            <EllipsisIcon className="animate-fade-in text-muted-foreground/40 size-4" />
-          </div>
-        )}
       {!(
         isDirty &&
         (dirtyFields.key || dirtyFields.value) &&
@@ -1403,18 +1450,13 @@ export const SecretEditTableRow = ({
         !isBatchMode
       ) && (
         <div
+          ref={actionBarRef}
           data-table-row-filter-positioner
-          onMouseEnter={() => setIsHoveringActionZone(true)}
-          onMouseLeave={() => setIsHoveringActionZone(false)}
           className={twMerge(
             "absolute z-20",
             "flex items-center gap-0.5 rounded-md border border-border bg-container-hover px-0.5 py-0.5 shadow-md",
             TABLE_ROW_ACTION_BAR_VISIBILITY_CLASS_NAME,
             shouldStayExpanded && TABLE_ROW_ACTION_BAR_FORCE_VISIBLE_CLASS_NAME,
-            isFieldActive &&
-              !showMenuWhileFocused &&
-              "[@media(hover:hover)]:group-hover:pointer-events-none [@media(hover:hover)]:group-hover:opacity-0",
-            isFieldActive && showMenuWhileFocused && TABLE_ROW_ACTION_BAR_FORCE_VISIBLE_CLASS_NAME,
             isSingleEnvView ? "top-[3px] right-0.5" : "-top-px -right-1.5"
           )}
         >
@@ -1496,6 +1538,41 @@ export const SecretEditTableRow = ({
               />
             </PopoverContent>
           </Popover>
+          {isPendingBatchChange && onPendingSave && (
+            <ProjectPermissionCan
+              I={
+                isPendingCreate
+                  ? ProjectPermissionActions.Create
+                  : isPendingDelete
+                    ? ProjectPermissionActions.Delete
+                    : ProjectPermissionActions.Edit
+              }
+              a={subject(ProjectPermissionSub.Secrets, {
+                environment,
+                secretPath,
+                secretName,
+                secretTags: ["*"]
+              })}
+            >
+              {(isAllowed) => (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <IconButton
+                      aria-label="Save pending secret changes"
+                      variant="ghost"
+                      className="size-7 border-0 hover:text-success"
+                      size="xs"
+                      isDisabled={!isAllowed || isSavingPendingChange}
+                      onClick={() => savePendingRow()}
+                    >
+                      <SaveIcon />
+                    </IconButton>
+                  </TooltipTrigger>
+                  <TooltipContent>Save pending changes</TooltipContent>
+                </Tooltip>
+              )}
+            </ProjectPermissionCan>
+          )}
           {isPendingBatchChange && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -1591,42 +1668,49 @@ export const SecretEditTableRow = ({
             )}
           <Tooltip>
             <TooltipTrigger asChild>
-              <IconButton
-                aria-label="Edit secret value"
-                variant="ghost"
-                size="xs"
-                className="size-7 border-0"
-                isDisabled={
-                  isPendingDelete ||
-                  isImportedSecret ||
-                  isManagedSecret ||
-                  isLoadingEditValue ||
-                  Boolean(revokedProjectFolderGrant) ||
-                  (isCreatable ? !canCreate : !canEditSecretValue)
-                }
-                onClick={() => {
-                  if (isSingleEnvView && !isCreatable && !isOverride) {
-                    handleOpenValueSheet();
-                    return;
-                  }
-                  setFocus("value", { shouldSelect: true });
-                }}
+              <span
+                className="inline-flex"
+                {...(isEditValueDisabled && {
+                  role: "button",
+                  tabIndex: 0,
+                  "aria-disabled": true,
+                  "aria-label": "Edit secret value"
+                })}
               >
-                <EditIcon className="size-3.5" />
-              </IconButton>
+                <IconButton
+                  aria-label="Edit secret value"
+                  variant="ghost"
+                  size="xs"
+                  className="size-7 border-0"
+                  isDisabled={isEditValueDisabled}
+                  onClick={() => {
+                    if (isSingleEnvView && !isCreatable && !isOverride) {
+                      handleOpenValueSheet();
+                      return;
+                    }
+                    setFocus("value", { shouldSelect: true });
+                  }}
+                >
+                  <EditIcon className="size-3.5" />
+                </IconButton>
+              </span>
             </TooltipTrigger>
             <TooltipContent>
-              {isImportedSecret
-                ? "Cannot Edit Imported Secret"
-                : isHoneyTokenSecret
-                  ? "Cannot Edit Honey Token Secret"
-                  : isRotatedSecret
-                    ? "Cannot Edit Rotated Secret"
-                    : (isCreatable ? !canCreate : !canEditSecretValue)
-                      ? "Access Denied"
-                      : isCreatable
-                        ? "Add Value"
-                        : "Edit Value"}
+              {isPendingDelete
+                ? "Discard Pending Changes First"
+                : isImportedSecret
+                  ? "Cannot Edit Imported Secret"
+                  : isHoneyTokenSecret
+                    ? "Honey token secrets are managed by Infisical and can't be edited"
+                    : isRotatedSecret
+                      ? "Rotated secrets are managed by their secret rotation and can't be edited"
+                      : revokedProjectFolderGrant
+                        ? "This secret share was revoked, so it can't be edited"
+                        : (isCreatable ? !canCreate : !canEditSecretValue)
+                          ? "Access Denied"
+                          : isCreatable
+                            ? "Add Value"
+                            : "Edit Value"}
             </TooltipContent>
           </Tooltip>
           <Tooltip>
@@ -2174,6 +2258,7 @@ export const SecretEditTableRow = ({
         </SheetContent>
       </Sheet>
       <AlertDialog
+        isPending={isEditing}
         open={popUp.editSecret.isOpen}
         onOpenChange={(isOpen) => handlePopUpToggle("editSecret", isOpen)}
         confirmationValue="confirm"
@@ -2198,14 +2283,13 @@ export const SecretEditTableRow = ({
           )}
           <AlertDialogConfirmationField />
           <AlertDialogFooter>
-            <AlertDialogCancel isDisabled={isEditing}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="project"
               onClick={(e) => {
                 e.preventDefault();
                 handleEditSecret(popUp?.editSecret?.data);
               }}
-              isPending={isEditing}
             >
               Save Changes
             </AlertDialogAction>
@@ -2222,47 +2306,55 @@ export const SecretEditTableRow = ({
         <TableCell
           isTruncatable
           className={twMerge(
-            "border-r",
+            "cursor-text border-r",
             isOverride && "border-l border-b-border/50 border-l-override"
           )}
+          onClick={(event) => {
+            const target = event.target as HTMLElement;
+            if (!event.currentTarget.contains(target) || target.closest("input, button")) return;
+            event.currentTarget.querySelector("input")?.focus();
+          }}
         >
-          <Popover open={isCommentOpen} onOpenChange={setIsCommentOpen}>
-            <div className="flex items-center gap-1.5">
-              {showCommentPreview ? (
-                nameInput
-              ) : (
-                <PopoverAnchor asChild>
-                  <span className="inline-flex min-w-0">{nameInput}</span>
-                </PopoverAnchor>
-              )}
-              {showCommentPreview && (
-                <PopoverAnchor asChild>
-                  <span className="inline-flex shrink-0">
-                    <Tooltip open={isCommentOpen ? false : undefined}>
-                      <TooltipTrigger asChild>
-                        <IconButton
-                          aria-label="View secret comment"
-                          variant="ghost-muted"
-                          size="2xs"
-                          onClick={() => {
-                            if (!isPendingDelete) setIsCommentOpen(true);
-                          }}
-                        >
-                          <MessageSquareIcon />
-                        </IconButton>
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-72">
-                        <p className="line-clamp-2 break-words whitespace-pre-wrap">
-                          {commentPreview}
-                        </p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </span>
-                </PopoverAnchor>
-              )}
-            </div>
-            {commentPopoverContent}
-          </Popover>
+          <div className="flex min-w-0 items-center gap-2">
+            <Popover open={isCommentOpen} onOpenChange={setIsCommentOpen}>
+              <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                {showCommentPreview ? (
+                  nameInput
+                ) : (
+                  <PopoverAnchor asChild>
+                    <span className="inline-flex min-w-0">{nameInput}</span>
+                  </PopoverAnchor>
+                )}
+                {showCommentPreview && (
+                  <PopoverAnchor asChild>
+                    <span className="inline-flex shrink-0">
+                      <Tooltip open={isCommentOpen ? false : undefined}>
+                        <TooltipTrigger asChild>
+                          <IconButton
+                            aria-label="View secret comment"
+                            variant="ghost-muted"
+                            size="2xs"
+                            onClick={() => {
+                              if (!isPendingDelete) setIsCommentOpen(true);
+                            }}
+                          >
+                            <MessageSquareIcon />
+                          </IconButton>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-72">
+                          <p className="line-clamp-2 break-words whitespace-pre-wrap">
+                            {commentPreview}
+                          </p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </span>
+                  </PopoverAnchor>
+                )}
+              </div>
+              {commentPopoverContent}
+            </Popover>
+            <SecretLastEditedTime secret={lastEdited} field={timestampField} />
+          </div>
         </TableCell>
         <TableCell
           className={twMerge("relative w-full max-w-0", isOverride && "border-b-border/50")}

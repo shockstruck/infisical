@@ -43,6 +43,7 @@ import { THCVaultConnection } from "./hc-vault-connection";
 import { THerokuConnection } from "./heroku-connection";
 import { THpeIloConnection } from "./hpe-ilo-connection";
 import { THumanitecConnection } from "./humanitec-connection";
+import { TJiraConnection } from "./jira-connection";
 import { TKeeperConnection } from "./keeper-connection";
 import { TKempLoadMasterConnection } from "./kemp-loadmaster-connection";
 import { TLaravelForgeConnection } from "./laravel-forge-connection";
@@ -73,6 +74,7 @@ import { TRailwayConnection } from "./railway-connection";
 import { TRedisConnection } from "./redis-connection";
 import { TRenderConnection } from "./render-connection";
 import { TRundeckConnection } from "./rundeck-connection";
+import { TS3CompatibleConnection } from "./s3-compatible-connection";
 import { TSalesforceConnection } from "./salesforce-connection";
 import { TSmbConnection } from "./smb-connection";
 import { TSnowflakeConnection } from "./snowflake-connection";
@@ -132,6 +134,7 @@ export * from "./hc-vault-connection";
 export * from "./heroku-connection";
 export * from "./hpe-ilo-connection";
 export * from "./humanitec-connection";
+export * from "./jira-connection";
 export * from "./keeper-connection";
 export * from "./kemp-loadmaster-connection";
 export * from "./laravel-forge-connection";
@@ -162,6 +165,7 @@ export * from "./railway-connection";
 export * from "./redis-connection";
 export * from "./render-connection";
 export * from "./rundeck-connection";
+export * from "./s3-compatible-connection";
 export * from "./salesforce-connection";
 export * from "./smb-connection";
 export * from "./snowflake-connection";
@@ -272,9 +276,14 @@ export type TAppConnection =
   | TDaytonaConnection
   | TStripeConnection
   | TKeeperConnection
-  | THpeIloConnection;
+  | THpeIloConnection
+  | TS3CompatibleConnection
+  | TJiraConnection;
 
-export type TAvailableAppConnection = Pick<TAppConnection, "name" | "id" | "projectId">;
+export type TAvailableAppConnection = Pick<TAppConnection, "name" | "id" | "projectId"> & {
+  gatewayId?: string | null;
+  gatewayPoolId?: string | null;
+};
 
 export type TListAppConnections<T extends TAppConnection> = { appConnections: T[] };
 // scott: we will need this once we have individual app connection page
