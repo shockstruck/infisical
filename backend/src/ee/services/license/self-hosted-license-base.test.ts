@@ -73,8 +73,8 @@ describe("self-hosted license CA cap", () => {
     expect(plan.maxCas).toBeNull();
   });
 
-  test("an unlicensed instance keeps the free tier's single CA", async () => {
+  test("an unlicensed instance leaves CAs uncapped under fork Enterprise Mode", async () => {
     const plan = await loadPlan({ licenseKey: "" });
-    expect(plan.maxCas).toBe(1);
+    expect(plan.maxCas).toBeNull();
   });
 });
