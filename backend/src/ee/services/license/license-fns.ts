@@ -177,6 +177,7 @@ export const getInstanceEnterpriseModeFeatures = (): TFeatureSet => ({
   pkiScep: true,
   pkiPqc: true,
   pkiOcsp: true,
+  pkiAwsKmsSigning: true,
   pkiEnterpriseCaIntegrations: true,
   pkiExternalIntermediateCa: true,
   pkiDiscovery: true,
