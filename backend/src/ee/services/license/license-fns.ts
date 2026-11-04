@@ -206,6 +206,7 @@ export const getInstanceEnterpriseModeFeatures = (): TFeatureSet => ({
   honeyTokenLimit: Number.MAX_SAFE_INTEGER,
   secretsBrokering: true,
   agentVaultByoS3: true,
+  agentVaultManagedStorage: true,
   crossProjectSecretSharing: true,
   secretsFolderRbac: true
 });
