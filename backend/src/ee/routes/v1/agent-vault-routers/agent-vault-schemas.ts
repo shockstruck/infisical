@@ -1,6 +1,12 @@
 import { z } from "zod";
 
 import { ProjectMembershipRole } from "@app/db/schemas";
+import { AGENT_VAULT_MAX_GRANTEES } from "@app/ee/services/agent-vault-access-bundle/agent-vault-access-bundle-service";
+import {
+  AGENT_VAULT_SKILL_MAX_PATH_LENGTH,
+  AGENT_VAULT_SKILL_UPLOAD_BODY_LIMIT
+} from "@app/ee/services/agent-vault-skill/agent-vault-skill-fns";
+import { AgentVaultSkillFileMode } from "@app/ee/services/agent-vault-skill/agent-vault-skill-types";
 import {
   AGENT_VAULT_NO_CONTROL_CHARS_MESSAGE,
   AGENT_VAULT_NO_CONTROL_CHARS_RE
@@ -9,7 +15,10 @@ import {
   AGENT_VAULT_MEMBER_PROVIDED_FIELDS,
   AgentVaultCredentialType,
   AgentVaultHttpMethod,
+  AgentVaultMcpTransport,
   AgentVaultMemberType,
+  AgentVaultOauthStatus,
+  AgentVaultServiceType,
   AgentVaultSubstitutionSurface,
   AgentVaultVariableReferenceField,
   AgentVaultVariableScope,
@@ -17,6 +26,8 @@ import {
 } from "@app/ee/services/agent-vault/agent-vault-enums";
 import { hostPatternSchema } from "@app/ee/services/agent-vault/agent-vault-host-pattern-fns";
 import { agentVaultPathPrefixListSchema } from "@app/ee/services/agent-vault/agent-vault-path-prefix-schemas";
+import { agentVaultMcpServerUrlSchema } from "@app/ee/services/agent-vault/agent-vault-service-type-fns";
+import { agentVaultAllowedToolsSchema } from "@app/ee/services/agent-vault/agent-vault-tool-name-schemas";
 import {
   acceptsVariableReferences,
   addDuplicateCustomHeaderNameIssues,
@@ -36,11 +47,18 @@ import {
   AGENT_VAULT_VARIABLE_KEY_RE,
   AGENT_VAULT_VARIABLE_VALUE_MAX_LENGTH
 } from "@app/ee/services/agent-vault/agent-vault-variable-fns";
-import { AGENT_VAULT_MAX_GRANTEES } from "@app/ee/services/agent-vault-access-bundle/agent-vault-access-bundle-service";
 import { AGENT_VAULT } from "@app/lib/api-docs";
-import { slugSchema } from "@app/server/lib/schemas";
+import { openApiHidden, slugSchema } from "@app/server/lib/schemas";
 
 export const AgentVaultNameSchema = slugSchema({ max: 64, field: "Name" });
+
+export const AgentVaultDescriptionSchema = z
+  .string()
+  .trim()
+  .max(256, "A description can be at most 256 characters")
+  .regex(AGENT_VAULT_NO_CONTROL_CHARS_RE, AGENT_VAULT_NO_CONTROL_CHARS_MESSAGE)
+  // Blank and absent read the same, so a blank description is stored as null rather than "".
+  .transform((description) => description || null);
 
 export const AgentVaultHostPatternSchema = hostPatternSchema.describe(AGENT_VAULT.SERVICE.hostPattern);
 
@@ -73,9 +91,17 @@ const MEMBER_FIELD_OF_INPUT: Record<"value" | "username" | "password", TAgentVau
 
 // Discriminated union options must be plain objects, so the checks that read two fields run on the union.
 const checkCredentialFields =
-  ({ requireValues }: { requireValues: boolean }) =>
+  ({ requireValues, mcp }: { requireValues: boolean; mcp: boolean }) =>
   (data: TCredentialShape, ctx: z.RefinementCtx) => {
     const memberProvided = new Set(data.memberProvidedFields ?? []);
+
+    if (mcp && memberProvided.size) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["memberProvidedFields"],
+        message: "MCP services don't support member-provided credentials yet. Leave memberProvidedFields out."
+      });
+    }
 
     // A member-provided field has no admin value: each member sends their own.
     (["value", "username", "password"] as const).forEach((field) => {
@@ -113,97 +139,116 @@ const checkCredentialFields =
   };
 
 // Value fields are optional in the shape so a member-provided one can be left out; the refine requires the rest.
-export const AgentVaultCredentialInputSchema = z
-  .discriminatedUnion("type", [
-    z
-      .object({
-        type: z.literal(AgentVaultCredentialType.Bearer),
-        headerName: agentVaultHeaderNameSchema.optional().describe(AGENT_VAULT.SERVICE.headerName),
-        headerPrefix: agentVaultHeaderPrefixSchema.optional().describe(AGENT_VAULT.SERVICE.headerPrefix),
-        value: acceptsVariableReferences(
-          z.string().min(1).max(8192).regex(AGENT_VAULT_NO_CONTROL_CHARS_RE, AGENT_VAULT_NO_CONTROL_CHARS_MESSAGE)
-        )
-          .optional()
-          .describe(AGENT_VAULT.SERVICE.value),
-        memberProvidedFields: bearerMemberProvidedFieldsSchema.optional()
-      })
-      .describe(JSON.stringify({ title: "Bearer" })),
-    z
-      .object({
-        type: z.literal(AgentVaultCredentialType.Basic),
-        username: acceptsVariableReferences(
-          z.string().trim().max(256).regex(AGENT_VAULT_NO_CONTROL_CHARS_RE, AGENT_VAULT_NO_CONTROL_CHARS_MESSAGE)
-        )
-          .optional()
-          .describe(AGENT_VAULT.SERVICE.username),
-        password: acceptsVariableReferences(
-          z.string().max(8192).regex(AGENT_VAULT_NO_CONTROL_CHARS_RE, AGENT_VAULT_NO_CONTROL_CHARS_MESSAGE)
-        )
-          .optional()
-          .describe(AGENT_VAULT.SERVICE.password),
-        memberProvidedFields: basicMemberProvidedFieldsSchema.optional()
-      })
-      .describe(JSON.stringify({ title: "Basic Auth" })),
-    z
-      .object({ type: z.literal(AgentVaultCredentialType.Passthrough) })
-      .describe(JSON.stringify({ title: "Pass-through" }))
-  ])
-  .superRefine(checkCredentialFields({ requireValues: true }));
+const bearerCredentialInput = z.object({
+  type: z.literal(AgentVaultCredentialType.Bearer),
+  headerName: agentVaultHeaderNameSchema.optional().describe(AGENT_VAULT.SERVICE.headerName),
+  headerPrefix: agentVaultHeaderPrefixSchema.optional().describe(AGENT_VAULT.SERVICE.headerPrefix),
+  value: acceptsVariableReferences(
+    z.string().min(1).max(8192).regex(AGENT_VAULT_NO_CONTROL_CHARS_RE, AGENT_VAULT_NO_CONTROL_CHARS_MESSAGE)
+  )
+    .optional()
+    .describe(AGENT_VAULT.SERVICE.value),
+  memberProvidedFields: bearerMemberProvidedFieldsSchema.optional()
+});
+const basicCredentialInput = z.object({
+  type: z.literal(AgentVaultCredentialType.Basic),
+  username: acceptsVariableReferences(
+    z.string().trim().max(256).regex(AGENT_VAULT_NO_CONTROL_CHARS_RE, AGENT_VAULT_NO_CONTROL_CHARS_MESSAGE)
+  )
+    .optional()
+    .describe(AGENT_VAULT.SERVICE.username),
+  password: acceptsVariableReferences(
+    z.string().max(8192).regex(AGENT_VAULT_NO_CONTROL_CHARS_RE, AGENT_VAULT_NO_CONTROL_CHARS_MESSAGE)
+  )
+    .optional()
+    .describe(AGENT_VAULT.SERVICE.password),
+  memberProvidedFields: basicMemberProvidedFieldsSchema.optional()
+});
+const passthroughCredentialInput = z.object({ type: z.literal(AgentVaultCredentialType.Passthrough) });
+const oauthCredentialInput = z.object({
+  type: z.literal(AgentVaultCredentialType.OAuth),
+  authorizationId: z.string().uuid().describe(AGENT_VAULT.SERVICE.authorizationId)
+});
+
+const docsTitle = (title: string, hidden = false) => JSON.stringify({ title, ...(hidden ? { "x-hidden": true } : {}) });
+
+// Only a user in the UI can complete an authorization, so the API docs never offer OAuth. The MCP schema also
+// hides the types an MCP service can't use, but still accepts them so the service refuses them by name.
+const credentialInputSchema = ({ mcp }: { mcp: boolean }) =>
+  z
+    .discriminatedUnion("type", [
+      bearerCredentialInput.describe(docsTitle("Bearer")),
+      basicCredentialInput.describe(docsTitle("Basic Auth", mcp)),
+      passthroughCredentialInput.describe(docsTitle("Pass-through", mcp)),
+      oauthCredentialInput.describe(docsTitle("OAuth", true))
+    ])
+    .superRefine(checkCredentialFields({ requireValues: true, mcp }));
+
+export const AgentVaultCredentialInputSchema = credentialInputSchema({ mcp: false });
+export const AgentVaultMcpCredentialInputSchema = credentialInputSchema({ mcp: true });
 
 // Not derived from the create schema: its `.default()`s would turn an omitted field into a reset on a PATCH.
-export const AgentVaultCredentialUpdateSchema = z
-  .discriminatedUnion("type", [
-    z
-      .object({
-        type: z.literal(AgentVaultCredentialType.Bearer),
-        headerName: agentVaultHeaderNameSchema.optional().describe(AGENT_VAULT.SERVICE.headerName),
-        headerPrefix: agentVaultHeaderPrefixSchema.optional().describe(AGENT_VAULT.SERVICE.headerPrefix),
-        value: acceptsVariableReferences(
-          z.string().min(1).max(8192).regex(AGENT_VAULT_NO_CONTROL_CHARS_RE, AGENT_VAULT_NO_CONTROL_CHARS_MESSAGE)
-        )
-          .optional()
-          .describe(AGENT_VAULT.SERVICE.updateValue),
-        memberProvidedFields: bearerMemberProvidedFieldsSchema.optional()
-      })
-      .describe(JSON.stringify({ title: "Bearer" })),
-    z
-      .object({
-        type: z.literal(AgentVaultCredentialType.Basic),
-        username: acceptsVariableReferences(
-          z.string().trim().max(256).regex(AGENT_VAULT_NO_CONTROL_CHARS_RE, AGENT_VAULT_NO_CONTROL_CHARS_MESSAGE)
-        )
-          .optional()
-          .describe(AGENT_VAULT.SERVICE.updateUsername),
-        password: acceptsVariableReferences(
-          z.string().max(8192).regex(AGENT_VAULT_NO_CONTROL_CHARS_RE, AGENT_VAULT_NO_CONTROL_CHARS_MESSAGE)
-        )
-          .optional()
-          .describe(AGENT_VAULT.SERVICE.updatePassword),
-        memberProvidedFields: basicMemberProvidedFieldsSchema.optional()
-      })
-      .describe(JSON.stringify({ title: "Basic Auth" })),
-    z
-      .object({ type: z.literal(AgentVaultCredentialType.Passthrough) })
-      .describe(JSON.stringify({ title: "Pass-through" }))
-  ])
-  .superRefine((data, ctx) => {
-    checkCredentialFields({ requireValues: false })(data, ctx);
-    // A full basic update must still leave a half to send. A partial one is checked against what is stored.
-    if (
-      data.type === AgentVaultCredentialType.Basic &&
-      data.username !== undefined &&
-      data.password !== undefined &&
-      !data.memberProvidedFields?.length &&
-      !data.username &&
-      !data.password
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["username"],
-        message: "A basic credential needs a username, a password, or both"
-      });
-    }
-  });
+const credentialUpdateSchema = ({ mcp }: { mcp: boolean }) =>
+  z
+    .discriminatedUnion("type", [
+      z
+        .object({
+          type: z.literal(AgentVaultCredentialType.Bearer),
+          headerName: agentVaultHeaderNameSchema.optional().describe(AGENT_VAULT.SERVICE.headerName),
+          headerPrefix: agentVaultHeaderPrefixSchema.optional().describe(AGENT_VAULT.SERVICE.headerPrefix),
+          value: acceptsVariableReferences(
+            z.string().min(1).max(8192).regex(AGENT_VAULT_NO_CONTROL_CHARS_RE, AGENT_VAULT_NO_CONTROL_CHARS_MESSAGE)
+          )
+            .optional()
+            .describe(AGENT_VAULT.SERVICE.updateValue),
+          memberProvidedFields: bearerMemberProvidedFieldsSchema.optional()
+        })
+        .describe(docsTitle("Bearer")),
+      z
+        .object({
+          type: z.literal(AgentVaultCredentialType.Basic),
+          username: acceptsVariableReferences(
+            z.string().trim().max(256).regex(AGENT_VAULT_NO_CONTROL_CHARS_RE, AGENT_VAULT_NO_CONTROL_CHARS_MESSAGE)
+          )
+            .optional()
+            .describe(AGENT_VAULT.SERVICE.updateUsername),
+          password: acceptsVariableReferences(
+            z.string().max(8192).regex(AGENT_VAULT_NO_CONTROL_CHARS_RE, AGENT_VAULT_NO_CONTROL_CHARS_MESSAGE)
+          )
+            .optional()
+            .describe(AGENT_VAULT.SERVICE.updatePassword),
+          memberProvidedFields: basicMemberProvidedFieldsSchema.optional()
+        })
+        .describe(docsTitle("Basic Auth", mcp)),
+      z.object({ type: z.literal(AgentVaultCredentialType.Passthrough) }).describe(docsTitle("Pass-through", mcp)),
+      z
+        .object({
+          type: z.literal(AgentVaultCredentialType.OAuth),
+          authorizationId: z.string().uuid().describe(AGENT_VAULT.SERVICE.updateAuthorizationId)
+        })
+        .describe(docsTitle("OAuth", true))
+    ])
+    .superRefine((data, ctx) => {
+      checkCredentialFields({ requireValues: false, mcp })(data, ctx);
+      // A full basic update must still leave a half to send. A partial one is checked against what is stored.
+      if (
+        data.type === AgentVaultCredentialType.Basic &&
+        data.username !== undefined &&
+        data.password !== undefined &&
+        !data.memberProvidedFields?.length &&
+        !data.username &&
+        !data.password
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["username"],
+          message: "A basic credential needs a username, a password, or both"
+        });
+      }
+    });
+
+export const AgentVaultCredentialUpdateSchema = credentialUpdateSchema({ mcp: false });
+export const AgentVaultMcpCredentialUpdateSchema = credentialUpdateSchema({ mcp: true });
 
 export const AgentVaultCredentialSummarySchema = z.discriminatedUnion("type", [
   z
@@ -228,7 +273,19 @@ export const AgentVaultCredentialSummarySchema = z.discriminatedUnion("type", [
     .describe(JSON.stringify({ title: "Basic Auth" })),
   z
     .object({ type: z.literal(AgentVaultCredentialType.Passthrough) })
-    .describe(JSON.stringify({ title: "Pass-through" }))
+    .describe(JSON.stringify({ title: "Pass-through" })),
+  z
+    .object({
+      type: z.literal(AgentVaultCredentialType.OAuth),
+      status: z.nativeEnum(AgentVaultOauthStatus).describe(AGENT_VAULT.SERVICE.oauthStatus),
+      issuer: z.string().describe(AGENT_VAULT.SERVICE.oauthIssuer),
+      grantedScopes: z.string().array().describe(AGENT_VAULT.SERVICE.oauthGrantedScopes),
+      requiredScopes: z.string().array().describe(AGENT_VAULT.SERVICE.oauthRequiredScopes),
+      expiresAt: z.string().nullable().optional().describe(AGENT_VAULT.SERVICE.oauthExpiresAt),
+      authorizedAt: z.string().nullable().optional().describe(AGENT_VAULT.SERVICE.oauthAuthorizedAt),
+      lastError: z.string().nullable().optional().describe(AGENT_VAULT.SERVICE.oauthLastError)
+    })
+    .describe(JSON.stringify({ title: "OAuth" }))
 ]);
 
 export const AgentVaultAllowedMethodsSchema = z
@@ -243,10 +300,16 @@ export const AgentVaultAllowedPathPrefixesSchema = agentVaultPathPrefixListSchem
   AGENT_VAULT.SERVICE.allowedPathPrefixes
 );
 
+export const AgentVaultAllowedToolsSchema = agentVaultAllowedToolsSchema.describe(AGENT_VAULT.SERVICE.allowedTools);
+
 export const AgentVaultCustomHeadersInputSchema = AgentVaultCustomHeaderInputSchema.array()
   .max(AGENT_VAULT_MAX_CUSTOM_HEADERS)
   .superRefine(addDuplicateCustomHeaderNameIssues)
   .describe(AGENT_VAULT.SERVICE.customHeaders);
+
+export const AgentVaultServerUrlSchema = agentVaultMcpServerUrlSchema.describe(AGENT_VAULT.SERVICE.serverUrl);
+
+const AgentVaultMcpTransportSchema = z.nativeEnum(AgentVaultMcpTransport).describe(AGENT_VAULT.SERVICE.transport);
 
 export const AgentVaultCustomHeadersUpdateSchema = AgentVaultCustomHeaderUpdateSchema.array()
   .max(AGENT_VAULT_MAX_CUSTOM_HEADERS)
@@ -262,6 +325,92 @@ export const AgentVaultSubstitutionsUpdateSchema = AgentVaultSubstitutionUpdateS
   .max(AGENT_VAULT_MAX_SUBSTITUTIONS)
   .superRefine(addDuplicatePlaceholderIssues)
   .describe(AGENT_VAULT.SERVICE.substitutions);
+
+// Each option also takes the other type's fields, hidden from the docs, so the service can refuse them with a
+// message naming the field rather than zod dropping them silently.
+export const AgentVaultCreateServiceBodySchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal(AgentVaultServiceType.Http).describe(AGENT_VAULT.SERVICE.type),
+      name: AgentVaultNameSchema.describe(AGENT_VAULT.SERVICE.name),
+      hostPattern: AgentVaultHostPatternSchema,
+      allowedMethods: AgentVaultAllowedMethodsSchema.optional(),
+      allowedPathPrefixes: AgentVaultAllowedPathPrefixesSchema.optional(),
+      credential: AgentVaultCredentialInputSchema,
+      customHeaders: AgentVaultCustomHeadersInputSchema.optional(),
+      substitutions: AgentVaultSubstitutionsInputSchema.optional(),
+      serverUrl: AgentVaultServerUrlSchema.optional().describe(openApiHidden()),
+      transport: AgentVaultMcpTransportSchema.optional().describe(openApiHidden()),
+      allowedTools: AgentVaultAllowedToolsSchema.optional().describe(openApiHidden())
+    })
+    .describe(JSON.stringify({ title: "HTTP service" })),
+  z
+    .object({
+      type: z.literal(AgentVaultServiceType.Mcp).describe(AGENT_VAULT.SERVICE.type),
+      name: AgentVaultNameSchema.describe(AGENT_VAULT.SERVICE.name),
+      serverUrl: AgentVaultServerUrlSchema,
+      transport: AgentVaultMcpTransportSchema,
+      credential: AgentVaultMcpCredentialInputSchema.describe(AGENT_VAULT.SERVICE.mcpCredential),
+      allowedTools: AgentVaultAllowedToolsSchema.optional(),
+      customHeaders: AgentVaultCustomHeadersInputSchema.optional(),
+      hostPattern: AgentVaultHostPatternSchema.optional().describe(openApiHidden()),
+      allowedMethods: AgentVaultAllowedMethodsSchema.optional().describe(openApiHidden()),
+      allowedPathPrefixes: AgentVaultAllowedPathPrefixesSchema.optional().describe(openApiHidden()),
+      substitutions: AgentVaultSubstitutionsInputSchema.optional().describe(openApiHidden())
+    })
+    .describe(JSON.stringify({ title: "MCP service" }))
+]);
+
+// Every field but `type` is optional, and `type` must match the stored one. Each option also takes the fields
+// GET returns for the other type (null, empty, or an MCP service's derived host pattern), so a client can send back
+// what it read; anything else in them is refused by name, as on create.
+export const AgentVaultUpdateServiceBodySchema = z
+  .discriminatedUnion("type", [
+    z
+      .object({
+        type: z.literal(AgentVaultServiceType.Http).describe(AGENT_VAULT.SERVICE.updateType),
+        name: AgentVaultNameSchema.optional().describe(AGENT_VAULT.SERVICE.name),
+        hostPattern: AgentVaultHostPatternSchema.optional(),
+        allowedMethods: AgentVaultAllowedMethodsSchema.optional(),
+        allowedPathPrefixes: AgentVaultAllowedPathPrefixesSchema.optional(),
+        credential: AgentVaultCredentialUpdateSchema.optional(),
+        customHeaders: AgentVaultCustomHeadersUpdateSchema.optional(),
+        substitutions: AgentVaultSubstitutionsUpdateSchema.optional(),
+        serverUrl: AgentVaultServerUrlSchema.nullable().optional().describe(openApiHidden()),
+        transport: AgentVaultMcpTransportSchema.nullable().optional().describe(openApiHidden()),
+        allowedTools: AgentVaultAllowedToolsSchema.optional().describe(openApiHidden())
+      })
+      .describe(JSON.stringify({ title: "HTTP service" })),
+    z
+      .object({
+        type: z.literal(AgentVaultServiceType.Mcp).describe(AGENT_VAULT.SERVICE.updateType),
+        name: AgentVaultNameSchema.optional().describe(AGENT_VAULT.SERVICE.name),
+        serverUrl: AgentVaultServerUrlSchema.optional(),
+        transport: AgentVaultMcpTransportSchema.optional(),
+        credential: AgentVaultMcpCredentialUpdateSchema.optional().describe(AGENT_VAULT.SERVICE.mcpCredential),
+        allowedTools: AgentVaultAllowedToolsSchema.optional(),
+        customHeaders: AgentVaultCustomHeadersUpdateSchema.optional(),
+        hostPattern: AgentVaultHostPatternSchema.optional().describe(openApiHidden()),
+        allowedMethods: AgentVaultAllowedMethodsSchema.optional().describe(openApiHidden()),
+        allowedPathPrefixes: AgentVaultAllowedPathPrefixesSchema.optional().describe(openApiHidden()),
+        substitutions: AgentVaultSubstitutionsUpdateSchema.optional().describe(openApiHidden())
+      })
+      .describe(JSON.stringify({ title: "MCP service" }))
+  ])
+  .refine(
+    ({ type, ...fields }) => Object.values(fields).some((value) => value !== undefined),
+    "Provide at least one field besides 'type' to update"
+  );
+
+// The service sheet's unsaved values, so the tools are listed with the credential a save would store. `serviceId`
+// names the saved service whose stored values fill in what is left out.
+export const AgentVaultListMcpToolsBodySchema = z.object({
+  serviceId: z.string().uuid().optional().describe(AGENT_VAULT.SERVICE.serviceId),
+  serverUrl: AgentVaultServerUrlSchema,
+  transport: AgentVaultMcpTransportSchema,
+  credential: AgentVaultMcpCredentialUpdateSchema.optional().describe(AGENT_VAULT.SERVICE.mcpCredential),
+  customHeaders: AgentVaultCustomHeadersUpdateSchema.optional()
+});
 
 const variableReferenceBase = {
   variableId: z.string().uuid().describe(AGENT_VAULT.VARIABLE.variableId),
@@ -298,9 +447,13 @@ export const AgentVaultServiceSchema = z.object({
   id: z.string().uuid().describe(AGENT_VAULT.SERVICE.serviceId),
   accessBundleId: z.string().uuid().describe(AGENT_VAULT.ACCESS_BUNDLE.accessBundleId),
   name: z.string().describe(AGENT_VAULT.SERVICE.name),
+  type: z.nativeEnum(AgentVaultServiceType).describe(AGENT_VAULT.SERVICE.type),
+  serverUrl: z.string().nullable().describe(AGENT_VAULT.SERVICE.serverUrlRead),
+  transport: z.nativeEnum(AgentVaultMcpTransport).nullable().describe(AGENT_VAULT.SERVICE.transportRead),
   hostPattern: z.string().describe(AGENT_VAULT.SERVICE.hostPattern),
   allowedMethods: z.nativeEnum(AgentVaultHttpMethod).array().nullable().describe(AGENT_VAULT.SERVICE.allowedMethods),
   allowedPathPrefixes: z.string().array().nullable().describe(AGENT_VAULT.SERVICE.allowedPathPrefixes),
+  allowedTools: z.string().array().nullable().describe(AGENT_VAULT.SERVICE.allowedTools),
   credential: AgentVaultCredentialSummarySchema,
   customHeaders: z
     .object({
@@ -554,6 +707,12 @@ export const AgentVaultSessionActorSchema = z.discriminatedUnion("type", [
   sessionActorSchemas.machineIdentity
 ]);
 
+// Shaped like a session's user actor, so a client shows the user a session acts for the way it shows an owner.
+export const AgentVaultSessionOnBehalfOfSchema = sessionActorSchemas.user.extend({
+  type: z.literal(AgentVaultMemberType.User).describe(AGENT_VAULT.SESSION.onBehalfOfType),
+  id: z.string().uuid().nullable().describe(AGENT_VAULT.SESSION.onBehalfOfUserIdRead)
+});
+
 // No .default().optional(): the optional wraps the default and the default never applies.
 export const agentVaultListQuery = (docs: { search: string; limit: string; offset: string }) => ({
   search: z
@@ -661,3 +820,79 @@ export const AgentVaultCreatedMemberSchema = z.discriminatedUnion("type", [
   actorRefSchemas.machineIdentity.extend({ grantedAt: grantedAtSchema }),
   actorRefSchemas.group.extend({ grantedAt: grantedAtSchema })
 ]);
+
+// Paths and limits are checked in the service, so a bad file gets a 400 that names it. These are outer bounds.
+const AgentVaultSkillFileSchema = z.object({
+  path: z.string().min(1).max(AGENT_VAULT_SKILL_MAX_PATH_LENGTH).describe(AGENT_VAULT.SKILL.filePath),
+  mode: z.nativeEnum(AgentVaultSkillFileMode).describe(AGENT_VAULT.SKILL.fileMode),
+  contentBase64: z.string().max(AGENT_VAULT_SKILL_UPLOAD_BODY_LIMIT).describe(AGENT_VAULT.SKILL.fileContent)
+});
+
+// The service refuses more than AGENT_VAULT_SKILL_MAX_FILES with a 400 that says so; a schema failure would be a 422.
+const AGENT_VAULT_SKILL_UPLOAD_MAX_FILES = 1000;
+
+export const AgentVaultSkillUploadSchema = z.object({
+  files: AgentVaultSkillFileSchema.array()
+    .min(1, "Upload at least SKILL.md")
+    .max(AGENT_VAULT_SKILL_UPLOAD_MAX_FILES)
+    .describe(AGENT_VAULT.SKILL.files)
+});
+
+export const AgentVaultSkillUpdateSchema = AgentVaultSkillUploadSchema.extend({
+  baseVersion: z.number().int().positive().optional().describe(AGENT_VAULT.SKILL.baseVersion)
+});
+
+export const AgentVaultSkillVersionParamSchema = z.coerce
+  .number()
+  .int()
+  .min(1)
+  .max(2147483647)
+  .describe(AGENT_VAULT.SKILL.version);
+
+export const AgentVaultSkillSchema = z.object({
+  id: z.string().uuid().describe(AGENT_VAULT.SKILL.skillId),
+  name: z.string().describe(AGENT_VAULT.SKILL.name),
+  description: z.string().describe(AGENT_VAULT.SKILL.description),
+  latestVersion: z.number().describe(AGENT_VAULT.SKILL.latestVersion),
+  createdAt: z.date().describe(AGENT_VAULT.SKILL.createdAt),
+  updatedAt: z.date().describe(AGENT_VAULT.SKILL.updatedAt)
+});
+
+export const AgentVaultSkillDetailSchema = AgentVaultSkillSchema.extend({
+  accessBundles: z
+    .object({
+      id: z.string().uuid().describe(AGENT_VAULT.SKILL.accessBundleId),
+      name: z.string().describe(AGENT_VAULT.SKILL.accessBundleName)
+    })
+    .array()
+    .describe(AGENT_VAULT.SKILL.accessBundles)
+});
+
+export const AgentVaultSkillVersionSchema = z.object({
+  id: z.string().uuid().describe(AGENT_VAULT.SKILL.versionId),
+  version: z.number().describe(AGENT_VAULT.SKILL.version),
+  sha256: z.string().describe(AGENT_VAULT.SKILL.sha256),
+  sizeBytes: z.number().describe(AGENT_VAULT.SKILL.sizeBytes),
+  fileCount: z.number().describe(AGENT_VAULT.SKILL.fileCount),
+  createdAt: z.date().describe(AGENT_VAULT.SKILL.versionCreatedAt)
+});
+
+export const AgentVaultSkillFilesResponseSchema = z
+  .object({
+    path: z.string().describe(AGENT_VAULT.SKILL.filePath),
+    mode: z.nativeEnum(AgentVaultSkillFileMode).describe(AGENT_VAULT.SKILL.fileMode),
+    contentBase64: z.string().describe(AGENT_VAULT.SKILL.fileContent)
+  })
+  .array()
+  .describe(AGENT_VAULT.SKILL.files);
+
+export const AgentVaultSkillVersionWithFilesSchema = AgentVaultSkillVersionSchema.extend({
+  files: AgentVaultSkillFilesResponseSchema
+});
+
+export const AgentVaultBundleSkillSchema = z.object({
+  id: z.string().uuid().describe(AGENT_VAULT.SKILL.skillId),
+  name: z.string().describe(AGENT_VAULT.SKILL.name),
+  description: z.string().describe(AGENT_VAULT.SKILL.description),
+  latestVersion: z.number().describe(AGENT_VAULT.SKILL.latestVersion)
+});

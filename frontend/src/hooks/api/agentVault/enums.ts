@@ -15,10 +15,33 @@ export enum AgentVaultSubstitutionSurface {
   Body = "body"
 }
 
+export enum AgentVaultServiceType {
+  Http = "http",
+  Mcp = "mcp"
+}
+
+export enum AgentVaultMcpTransport {
+  StreamableHttp = "streamable-http",
+  Sse = "sse"
+}
+
 export enum AgentVaultCredentialType {
   Bearer = "bearer",
   Basic = "basic",
-  Passthrough = "passthrough"
+  Passthrough = "passthrough",
+  OAuth = "oauth"
+}
+
+export enum AgentVaultOauthStatus {
+  Connected = "connected",
+  NeedsReauthorization = "needs-reauthorization",
+  NeedsAdditionalScopes = "needs-additional-scopes"
+}
+
+export enum AgentVaultOauthAuthorizationStatus {
+  Pending = "pending",
+  Authorized = "authorized",
+  Failed = "failed"
 }
 
 export enum AgentVaultMemberType {
@@ -41,6 +64,12 @@ export enum AgentVaultSessionStatus {
 export enum AgentVaultSessionScope {
   Mine = "mine",
   All = "all"
+}
+
+/** Which users a machine identity can start sessions on behalf of. */
+export enum AgentVaultDelegationScope {
+  AllMembers = "all-members",
+  Selected = "selected"
 }
 
 /** Global variables are an admin's, for services; personal ones are the caller's own, for their personal values. */

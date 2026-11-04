@@ -1,6 +1,5 @@
 /* eslint-disable @typescript-eslint/no-use-before-define */
 import { type ComponentProps, type ReactNode, useEffect, useMemo, useState } from "react";
-import { Helmet } from "react-helmet";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { format } from "date-fns";
 import {
@@ -19,6 +18,7 @@ import { twMerge } from "tailwind-merge";
 
 import { ProjectLimitUpgradeIntent, UpgradeGate } from "@app/components/license/UpgradeGate";
 import { createNotification } from "@app/components/notifications";
+import { PageTitle } from "@app/components/PageTitle";
 import { OrgPermissionCan } from "@app/components/permissions";
 import { NewProjectModal } from "@app/components/projects";
 import { CertManagerNotConfiguredModal } from "@app/components/projects/CertManagerNotConfiguredModal";
@@ -112,6 +112,7 @@ import {
 import { useGetSecretScanningProjectId } from "@app/hooks/api/secretScanningV2";
 import { useUpdateUserProjectFavorites } from "@app/hooks/api/users/mutation";
 import { useGetUserProjectFavorites } from "@app/hooks/api/users/queries";
+import { DeletedProjectsTable } from "@app/pages/organization/ProjectsPage/components/DeletedProjectsTable";
 import {
   ProjectListToggle,
   ProjectListView
@@ -299,7 +300,7 @@ export const ProjectTypePage = () => {
   useEffect(() => {
     if (projectType === ProjectType.AgentVault) {
       navigate({
-        to: "/organizations/$orgId/agent-vault/sessions",
+        to: "/organizations/$orgId/agent-vault",
         params: { orgId }
       });
     }
@@ -307,18 +308,21 @@ export const ProjectTypePage = () => {
 
   if (projectType === ProjectType.CertificateManager) {
     return (
-      <CertManagerNotConfiguredModal
-        isOpen={isCertManagerSetupOpen}
-        onOpenChange={(open) => {
-          setIsCertManagerSetupOpen(open);
-          if (!open) {
-            navigate({
-              to: "/organizations/$orgId/projects",
-              params: { orgId }
-            });
-          }
-        }}
-      />
+      <>
+        <PageTitle title={getProjectTitle(projectType)} />
+        <CertManagerNotConfiguredModal
+          isOpen={isCertManagerSetupOpen}
+          onOpenChange={(open) => {
+            setIsCertManagerSetupOpen(open);
+            if (!open) {
+              navigate({
+                to: "/organizations/$orgId/projects",
+                params: { orgId }
+              });
+            }
+          }}
+        />
+      </>
     );
   }
 
@@ -377,10 +381,8 @@ const ProjectTypeContent = ({
 
   return (
     <div className="mx-auto flex max-w-8xl flex-col">
-      <Helmet>
-        <title>{typeTitle} Projects</title>
-        <link rel="icon" href="/infisical.ico" />
-      </Helmet>
+      <PageTitle title={`${typeTitle} Projects`} />
+      <link rel="icon" href="/infisical.ico" />
       <PageHeader
         title={typeTitle}
         scope={projectType}
@@ -412,6 +414,9 @@ const ProjectTypeContent = ({
           isAddingProjectsAllowed={isAddingProjectsAllowed}
           hideProjectListToggle={!canRequestAccess}
         />
+      )}
+      {projectType === ProjectType.SecretManager && (
+        <DeletedProjectsTable projectType={projectType} />
       )}
       <NewProjectModal
         isOpen={popUp.addNewWs.isOpen}
