@@ -80,9 +80,9 @@ describe("self-hosted license CA cap", () => {
 });
 
 describe("self-hosted session log default storage", () => {
-  test("an unlicensed instance doesn't get it", async () => {
+  test("an unlicensed instance gets it under fork Enterprise Mode", async () => {
     const plan = await loadPlan({ licenseKey: "" });
-    expect(plan.agentVaultManagedStorage).toBe(false);
+    expect(plan.agentVaultManagedStorage).toBe(true);
   });
 
   test("a license gets it only when its entitlements turn it on", async () => {
