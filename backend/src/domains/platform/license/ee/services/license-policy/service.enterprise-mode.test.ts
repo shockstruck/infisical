@@ -113,7 +113,9 @@ describe("LicensePolicyService Enterprise Mode", () => {
     ["LICENSE_KEY", { LICENSE_KEY: "test-online-key" }, null],
     ["LICENSE_KEY_OFFLINE", { LICENSE_KEY_OFFLINE: "not-an-offline-key" }, null]
   ])("wires the mode for %s", async (_label, keys, slug) => {
-    const module = new LicenseEeModule({ envConfig: { LICENSE_KEY: "", isCloud: false, ...keys } });
+    const module = new LicenseEeModule({
+      envConfig: { LICENSE_KEY: "", LICENSE_SERVER_URL: "https://license.example.invalid", isCloud: false, ...keys }
+    });
     vi.spyOn(module.licenseServerClient, "getEntitlements").mockResolvedValue(null);
     const instance = await module.licensePolicyService.resolveInstanceEntitlements();
 
