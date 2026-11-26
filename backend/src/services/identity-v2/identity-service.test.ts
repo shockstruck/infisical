@@ -3,11 +3,15 @@ import knex, { Knex } from "knex";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { AccessScope, ProjectType } from "@app/db/schemas";
+import { FakeInstanceConfigService } from "@app/domains/platform/instance-config-core/ce/testing/fake-instance-config-service";
+import { FakeLicenseService } from "@app/domains/platform/license/ce/testing/fake-license-service";
+import { FakeUsageMeteringService } from "@app/domains/platform/license/ce/testing/fake-usage-metering-service";
 
 import { identityV2ServiceFactory } from "./identity-service";
 import { TDeleteIdentityV2DTO } from "./identity-types";
 
-vi.mock("@app/lib/config/env", () => ({
+vi.mock("@app/lib/config/env", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   getConfig: () => ({})
 }));
 
@@ -15,13 +19,8 @@ vi.mock("@app/lib/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
 }));
 
-// `vi.mock` factories are hoisted above imports — the spy they reference must come from `vi.hoisted`.
-// Stubbing the config read rather than the guard itself keeps the real instance-admin check under test.
-const { getServerCfgMock } = vi.hoisted(() => ({ getServerCfgMock: vi.fn() }));
-
-vi.mock("@app/services/super-admin/super-admin-service", () => ({
-  getServerCfg: getServerCfgMock
-}));
+// Reassigned per test: the instance admin identities the service under test reads.
+let instanceConfigService = new FakeInstanceConfigService();
 
 const ORG_ID = "org-1";
 const PROJECT_ID = "project-1";
@@ -45,6 +44,7 @@ const createService = ({
   tx = TX
 }: { existingIdentity?: Record<string, unknown> | null; projectType?: ProjectType; tx?: Knex } = {}) => {
   const deleteAlertsForDeletedResource = vi.fn().mockResolvedValue(0);
+  const licenseService = new FakeLicenseService();
 
   const identityDAL = {
     findOne: vi.fn().mockResolvedValue(existingIdentity),
@@ -54,6 +54,7 @@ const createService = ({
   };
 
   const service = identityV2ServiceFactory({
+    instanceConfigService,
     identityDAL: identityDAL as never,
     identityMembershipV2DAL: {} as never,
     permissionService: {
@@ -66,7 +67,8 @@ const createService = ({
       getOrgPermissionByRoles: vi.fn().mockResolvedValue([]),
       getProjectPermissionByRoles: vi.fn().mockResolvedValue([])
     } as never,
-    licenseService: { getPlan: vi.fn(), updateSubscriptionOrgMemberCount: vi.fn() } as never,
+    licenseService,
+    usageMeteringService: new FakeUsageMeteringService(),
     // The delete guards bound the removal against the roles the target identity holds.
     membershipIdentityDAL: {
       getIdentityById: vi.fn().mockResolvedValue({ roles: [] }),
@@ -86,7 +88,6 @@ const createService = ({
     } as never,
     orgDAL: { findById: vi.fn().mockResolvedValue({ id: ORG_ID, shouldUseNewPrivilegeSystem: true }) } as never,
     roleDAL: { find: vi.fn() } as never,
-    usageMeteringService: { emit: vi.fn(), emitForProject: vi.fn() } as never,
     alertService: { deleteAlertsForDeletedResource } as never
   });
 
@@ -96,7 +97,7 @@ const createService = ({
 describe("deleteIdentity alert cleanup", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getServerCfgMock.mockResolvedValue({ adminIdentityIds: [] });
+    instanceConfigService = new FakeInstanceConfigService({ settings: { adminIdentityIds: [] } });
   });
 
   test("reaps the identity's alerts in every org, in the same transaction as the row delete", async () => {
@@ -178,7 +179,7 @@ describe("instance admin identities are protected on the v2 surface", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    getServerCfgMock.mockResolvedValue({ adminIdentityIds: [IDENTITY_ID] });
+    instanceConfigService = new FakeInstanceConfigService({ settings: { adminIdentityIds: [IDENTITY_ID] } });
   });
 
   test("delete is refused for a non instance admin actor, and nothing is reaped", async () => {
@@ -209,7 +210,7 @@ describe("instance admin identities are protected on the v2 surface", () => {
   });
 
   test("the guard is inert when no instance admin identities are configured", async () => {
-    getServerCfgMock.mockResolvedValue({ adminIdentityIds: [] });
+    instanceConfigService = new FakeInstanceConfigService({ settings: { adminIdentityIds: [] } });
     const { service, identityDAL } = createService();
 
     await service.deleteIdentity(buildDto());
@@ -243,7 +244,7 @@ describe("updateIdentity name check", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    getServerCfgMock.mockResolvedValue({ adminIdentityIds: [] });
+    instanceConfigService = new FakeInstanceConfigService({ settings: { adminIdentityIds: [] } });
   });
 
   const update = (service: ReturnType<typeof createService>["service"], data: Record<string, unknown>) =>

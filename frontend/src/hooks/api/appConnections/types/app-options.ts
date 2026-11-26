@@ -395,6 +395,22 @@ export type TJiraConnectionOption = TAppConnectionOptionBase & {
   app: AppConnection.Jira;
 };
 
+export type TClickHouseConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.ClickHouse;
+};
+
+export type TIncidentIoConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.IncidentIo;
+};
+
+export type TJenkinsConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.Jenkins;
+};
+
+export type TCoolifyConnectionOption = TAppConnectionOptionBase & {
+  app: AppConnection.Coolify;
+};
+
 export type TAppConnectionOption =
   | TAwsConnectionOption
   | TGitHubConnectionOption
@@ -490,7 +506,11 @@ export type TAppConnectionOption =
   | TDaytonaConnectionOption
   | TServiceNowConnectionOption
   | TS3CompatibleConnectionOption
-  | TJiraConnectionOption;
+  | TJiraConnectionOption
+  | TClickHouseConnectionOption
+  | TIncidentIoConnectionOption
+  | TJenkinsConnectionOption
+  | TCoolifyConnectionOption;
 
 export type TAppConnectionOptionMap = {
   [AppConnection.AWS]: TAwsConnectionOption;
@@ -588,4 +608,8 @@ export type TAppConnectionOptionMap = {
   [AppConnection.ServiceNow]: TServiceNowConnectionOption;
   [AppConnection.S3Compatible]: TS3CompatibleConnectionOption;
   [AppConnection.Jira]: TJiraConnectionOption;
+  [AppConnection.ClickHouse]: TClickHouseConnectionOption;
+  [AppConnection.IncidentIo]: TIncidentIoConnectionOption;
+  [AppConnection.Jenkins]: TJenkinsConnectionOption;
+  [AppConnection.Coolify]: TCoolifyConnectionOption;
 };

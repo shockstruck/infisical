@@ -70,6 +70,10 @@ import {
   SanitizedCircleCIConnectionSchema
 } from "@app/services/app-connection/circleci";
 import {
+  ClickHouseConnectionListItemSchema,
+  SanitizedClickHouseConnectionSchema
+} from "@app/services/app-connection/clickhouse";
+import {
   Cloud66ConnectionListItemSchema,
   SanitizedCloud66ConnectionSchema
 } from "@app/services/app-connection/cloud-66";
@@ -78,6 +82,10 @@ import {
   SanitizedCloudflareConnectionSchema
 } from "@app/services/app-connection/cloudflare/cloudflare-connection-schema";
 import { ConvexConnectionListItemSchema, SanitizedConvexConnectionSchema } from "@app/services/app-connection/convex";
+import {
+  CoolifyConnectionListItemSchema,
+  SanitizedCoolifyConnectionSchema
+} from "@app/services/app-connection/coolify";
 import {
   DatabricksConnectionListItemSchema,
   SanitizedDatabricksConnectionSchema
@@ -150,6 +158,14 @@ import {
   ImpervaConnectionListItemSchema,
   SanitizedImpervaConnectionSchema
 } from "@app/services/app-connection/imperva";
+import {
+  IncidentIoConnectionListItemSchema,
+  SanitizedIncidentIoConnectionSchema
+} from "@app/services/app-connection/incident-io";
+import {
+  JenkinsConnectionListItemSchema,
+  SanitizedJenkinsConnectionSchema
+} from "@app/services/app-connection/jenkins";
 import { JiraConnectionListItemSchema, SanitizedJiraConnectionSchema } from "@app/services/app-connection/jira";
 import { KeeperConnectionListItemSchema, SanitizedKeeperConnectionSchema } from "@app/services/app-connection/keeper";
 import {
@@ -381,6 +397,8 @@ const SanitizedAppConnectionSchema = z.union([
   ...SanitizedConvexConnectionSchema.options,
   ...SanitizedRundeckConnectionSchema.options,
   ...SanitizedPortainerConnectionSchema.options,
+  ...SanitizedJenkinsConnectionSchema.options,
+  ...SanitizedCoolifyConnectionSchema.options,
   ...SanitizedQoveryConnectionSchema.options,
   ...SanitizedLiteLLMConnectionSchema.options,
   ...SanitizedFireworksConnectionSchema.options,
@@ -393,7 +411,9 @@ const SanitizedAppConnectionSchema = z.union([
   ...SanitizedHpeIloConnectionSchema.options,
   ...SanitizedServiceNowConnectionSchema.options,
   ...SanitizedS3CompatibleConnectionSchema.options,
-  ...SanitizedJiraConnectionSchema.options
+  ...SanitizedJiraConnectionSchema.options,
+  ...SanitizedClickHouseConnectionSchema.options,
+  ...SanitizedIncidentIoConnectionSchema.options
 ]);
 
 const AppConnectionOptionsSchema = z.discriminatedUnion("app", [
@@ -479,6 +499,8 @@ const AppConnectionOptionsSchema = z.discriminatedUnion("app", [
   ConvexConnectionListItemSchema,
   RundeckConnectionListItemSchema,
   PortainerConnectionListItemSchema,
+  JenkinsConnectionListItemSchema,
+  CoolifyConnectionListItemSchema,
   QoveryConnectionListItemSchema,
   LiteLLMConnectionListItemSchema,
   FireworksConnectionListItemSchema,
@@ -491,7 +513,9 @@ const AppConnectionOptionsSchema = z.discriminatedUnion("app", [
   HpeIloConnectionListItemSchema,
   ServiceNowConnectionListItemSchema,
   S3CompatibleConnectionListItemSchema,
-  JiraConnectionListItemSchema
+  JiraConnectionListItemSchema,
+  ClickHouseConnectionListItemSchema,
+  IncidentIoConnectionListItemSchema
 ]);
 
 export const registerAppConnectionRouter = async (server: FastifyZodProvider) => {
@@ -516,8 +540,8 @@ export const registerAppConnectionRouter = async (server: FastifyZodProvider) =>
       }
     },
     onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
-    handler: (req) => {
-      const appConnectionOptions = server.services.appConnection.listAppConnectionOptions(req.query.projectType);
+    handler: async (req) => {
+      const appConnectionOptions = await server.services.appConnection.listAppConnectionOptions(req.query.projectType);
       return { appConnectionOptions };
     }
   });

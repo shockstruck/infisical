@@ -3,9 +3,11 @@ import { AbilityBuilder, createMongoAbility, MongoAbility } from "@casl/ability"
 import {
   ProjectPermissionActions,
   ProjectPermissionAgentVaultAccessBundleActions,
+  ProjectPermissionAgentVaultHookActions,
   ProjectPermissionAgentVaultProxyActions,
   ProjectPermissionAgentVaultSessionActions,
   ProjectPermissionAgentVaultSkillActions,
+  ProjectPermissionAgentVaultVariableActions,
   ProjectPermissionAppConnectionActions,
   ProjectPermissionApplicationActions,
   ProjectPermissionApprovalRequestActions,
@@ -280,7 +282,8 @@ const buildAdminPermissionRules = () => {
       ProjectPermissionCmekActions.GenerateMac,
       ProjectPermissionCmekActions.VerifyMac,
       ProjectPermissionCmekActions.Rotate,
-      ProjectPermissionCmekActions.ExportPrivateKey
+      ProjectPermissionCmekActions.ExportPrivateKey,
+      ProjectPermissionCmekActions.PublishPublicKey
     ],
     ProjectPermissionSub.Cmek
   );
@@ -817,7 +820,12 @@ const buildAgentVaultProjectAdminPermissionRules = () => {
       ProjectPermissionAgentVaultSessionActions.Read,
       ProjectPermissionAgentVaultSessionActions.Create,
       ProjectPermissionAgentVaultSessionActions.Edit,
-      ProjectPermissionAgentVaultSessionActions.Revoke
+      ProjectPermissionAgentVaultSessionActions.Revoke,
+      ProjectPermissionAgentVaultSessionActions.ReadAny,
+      ProjectPermissionAgentVaultSessionActions.EditAny,
+      ProjectPermissionAgentVaultSessionActions.RevokeAny,
+      ProjectPermissionAgentVaultSessionActions.CreateWithInlineServices,
+      ProjectPermissionAgentVaultSessionActions.CreateWithInlineSkills
     ],
     ProjectPermissionSub.AgentVaultSessions
   );
@@ -842,6 +850,27 @@ const buildAgentVaultProjectAdminPermissionRules = () => {
       ProjectPermissionAgentVaultSkillActions.Delete
     ],
     ProjectPermissionSub.AgentVaultSkills
+  );
+
+  can(
+    [
+      ProjectPermissionAgentVaultVariableActions.Read,
+      ProjectPermissionAgentVaultVariableActions.Create,
+      ProjectPermissionAgentVaultVariableActions.Edit,
+      ProjectPermissionAgentVaultVariableActions.Delete,
+      ProjectPermissionAgentVaultVariableActions.ReadValue
+    ],
+    ProjectPermissionSub.AgentVaultVariables
+  );
+
+  can(
+    [
+      ProjectPermissionAgentVaultHookActions.Read,
+      ProjectPermissionAgentVaultHookActions.Create,
+      ProjectPermissionAgentVaultHookActions.Edit,
+      ProjectPermissionAgentVaultHookActions.Delete
+    ],
+    ProjectPermissionSub.AgentVaultHooks
   );
 
   can(
@@ -930,12 +959,14 @@ const buildAgentVaultProjectMemberPermissionRules = () => {
       ProjectPermissionAgentVaultSessionActions.Read,
       ProjectPermissionAgentVaultSessionActions.Create,
       ProjectPermissionAgentVaultSessionActions.Edit,
-      ProjectPermissionAgentVaultSessionActions.Revoke
+      ProjectPermissionAgentVaultSessionActions.Revoke,
+      ProjectPermissionAgentVaultSessionActions.CreateWithInlineSkills
     ],
     ProjectPermissionSub.AgentVaultSessions
   );
   can([ProjectPermissionAgentVaultProxyActions.Read], ProjectPermissionSub.AgentVaultProxies);
   can([ProjectPermissionAgentVaultSkillActions.Read], ProjectPermissionSub.AgentVaultSkills);
+  can([ProjectPermissionAgentVaultHookActions.Read], ProjectPermissionSub.AgentVaultHooks);
 
   return rules;
 };
@@ -1099,6 +1130,7 @@ const buildApplicationOperatorPermissionRules = () => {
       ResourcePermissionCertificateActions.List,
       ResourcePermissionCertificateActions.Create,
       ResourcePermissionCertificateActions.Edit,
+      ResourcePermissionCertificateActions.RequestRevocation,
       ResourcePermissionCertificateActions.ReadPrivateKey,
       ResourcePermissionCertificateActions.Import
     ],
@@ -1208,6 +1240,7 @@ const buildSignerAdminPermissionRules = () => {
       ResourcePermissionSignerActions.PreApprove,
       ResourcePermissionSignerActions.RevokeRequest,
       ResourcePermissionSignerActions.ReissueCertificate,
+      ResourcePermissionSignerActions.RevokeCertificate,
       ResourcePermissionSignerActions.ExportCertificate
     ],
     ResourcePermissionSub.Signer

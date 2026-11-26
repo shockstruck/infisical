@@ -2,6 +2,8 @@ import { createMongoAbility, MongoAbility } from "@casl/ability";
 import { vi } from "vitest";
 
 import { AccessScope } from "@app/db/schemas";
+import { FakeInstanceConfigService } from "@app/domains/platform/instance-config-core/ce/testing/fake-instance-config-service";
+import { FakeLicenseService } from "@app/domains/platform/license/ce/testing/fake-license-service";
 import {
   orgAdminPermissions,
   orgMemberPermissions,
@@ -99,10 +101,12 @@ const createGuard = ({
     userDAL: {} as never,
     smtpService: {} as never,
     userGroupMembershipDAL: {} as never,
-    licenseService: {} as never,
+    licenseService: new FakeLicenseService(),
+    instanceConfigService: new FakeInstanceConfigService(),
     emailDomainDAL: {} as never,
     oidcConfigDAL: {} as never,
-    samlConfigDAL: {} as never
+    samlConfigDAL: {} as never,
+    orgInviteQuota: { admit: vi.fn(), getSeatPlan: vi.fn(), assertSeatsForInvites: vi.fn() }
   });
 
   return () =>
@@ -318,7 +322,8 @@ describe("onCreateMembershipUserGuard privilege boundary", () => {
           .fn()
           .mockResolvedValue({ id: ORG_ID, shouldUseNewPrivilegeSystem, authEnforced: false, rootOrgId: null })
       } as never,
-      licenseService: { getPlan: vi.fn().mockResolvedValue({}), getOrgSeatUsage: vi.fn() } as never,
+      licenseService: new FakeLicenseService(),
+      instanceConfigService: new FakeInstanceConfigService(),
       membershipUserDAL: { find: vi.fn(), getUserById: vi.fn() } as never,
       tokenService: {} as never,
       userDAL: {} as never,
@@ -326,7 +331,8 @@ describe("onCreateMembershipUserGuard privilege boundary", () => {
       userGroupMembershipDAL: {} as never,
       emailDomainDAL: { find: vi.fn().mockResolvedValue([]) } as never,
       oidcConfigDAL: {} as never,
-      samlConfigDAL: {} as never
+      samlConfigDAL: {} as never,
+      orgInviteQuota: { admit: vi.fn(), getSeatPlan: vi.fn(), assertSeatsForInvites: vi.fn() }
     });
 
     return () =>
@@ -336,7 +342,8 @@ describe("onCreateMembershipUserGuard privilege boundary", () => {
           scopeData: { scope: AccessScope.Organization, orgId: ORG_ID },
           data: { roles: incomingRoles.map((role) => ({ role, isTemporary: false })) }
         } as never,
-        [{ id: "invitee-id", email: "invitee@example.com" }] as never
+        [{ id: "invitee-id", email: "invitee@example.com" }] as never,
+        []
       );
   };
 

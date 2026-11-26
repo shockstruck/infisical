@@ -4,7 +4,8 @@ import { requestContext } from "@fastify/request-context";
 import { AxiosError } from "axios";
 
 import { AccessScope, ActionProjectType, IdentityAuthMethod, OrganizationActionScope } from "@app/db/schemas";
-import { TLicenseServiceFactory } from "@app/ee/services/license/license-service";
+import { TInstanceConfigService } from "@app/domains/platform/instance-config-core/ce/module";
+import { PlanFeature, TLicenseService } from "@app/domains/platform/license/ce/module";
 import { OrgPermissionIdentityActions, OrgPermissionSubjects } from "@app/ee/services/permission/org-permission";
 import { TPermissionServiceFactory } from "@app/ee/services/permission/permission-service-types";
 import { ProjectPermissionIdentityActions, ProjectPermissionSub } from "@app/ee/services/permission/project-permission";
@@ -13,6 +14,7 @@ import { getConfig } from "@app/lib/config/env";
 import { request } from "@app/lib/config/request";
 import { BadRequestError, ForbiddenRequestError, NotFoundError, UnauthorizedError } from "@app/lib/errors";
 import { extractIPDetails, isValidIpOrCidr, TIp } from "@app/lib/ip";
+import { TEventEmitter } from "@app/lib/knex/event-emitter";
 import { logger } from "@app/lib/logger";
 import { requestMemoKeys } from "@app/lib/request-context/memo-keys";
 import { RequestContextKey } from "@app/lib/request-context/request-context-keys";
@@ -23,7 +25,6 @@ import {
   authAttemptCounter,
   recordAuthAttemptMetric
 } from "@app/lib/telemetry/metrics";
-import { TEventEmitter } from "@app/services/event-outbox/event-outbox-types";
 import {
   emitIdentityAuthMethodChanged,
   IdentityAuthMethodChange
@@ -58,7 +59,8 @@ type TIdentityAliCloudAuthServiceFactoryDep = {
   >;
   membershipIdentityDAL: Pick<TMembershipIdentityDALFactory, "findOne" | "update" | "getIdentityById">;
   keyStore: Pick<TKeyStoreFactory, "setItemWithExpiryNX">;
-  licenseService: Pick<TLicenseServiceFactory, "getPlan">;
+  licenseService: TLicenseService;
+  instanceConfigService: TInstanceConfigService;
   permissionService: Pick<
     TPermissionServiceFactory,
     "getOrgPermission" | "getProjectPermission" | "getActorGrantAbilities"
@@ -80,6 +82,7 @@ export const identityAliCloudAuthServiceFactory = ({
   membershipIdentityDAL,
   keyStore,
   licenseService,
+  instanceConfigService,
   permissionService,
   orgDAL,
   identityAccessTokenService,
@@ -303,11 +306,11 @@ export const identityAliCloudAuthServiceFactory = ({
       }
     );
 
-    await validateIdentityUpdateForSuperAdminPrivileges(identityId, isActorSuperAdmin);
+    await validateIdentityUpdateForSuperAdminPrivileges(instanceConfigService, identityId, isActorSuperAdmin);
     const plan = await licenseService.getPlan(identityMembershipOrg.scopeOrgId);
     const reformattedAccessTokenTrustedIps = accessTokenTrustedIps.map((accessTokenTrustedIp) => {
       if (
-        !plan.ipAllowlisting &&
+        !plan.has(PlanFeature.IpAllowlisting) &&
         accessTokenTrustedIp.ipAddress !== "0.0.0.0/0" &&
         accessTokenTrustedIp.ipAddress !== "::/0"
       )
@@ -408,11 +411,11 @@ export const identityAliCloudAuthServiceFactory = ({
       }
     );
 
-    await validateIdentityUpdateForSuperAdminPrivileges(identityId, isActorSuperAdmin);
+    await validateIdentityUpdateForSuperAdminPrivileges(instanceConfigService, identityId, isActorSuperAdmin);
     const plan = await licenseService.getPlan(identityMembershipOrg.scopeOrgId);
     const reformattedAccessTokenTrustedIps = accessTokenTrustedIps?.map((accessTokenTrustedIp) => {
       if (
-        !plan.ipAllowlisting &&
+        !plan.has(PlanFeature.IpAllowlisting) &&
         accessTokenTrustedIp.ipAddress !== "0.0.0.0/0" &&
         accessTokenTrustedIp.ipAddress !== "::/0"
       )
@@ -548,7 +551,7 @@ export const identityAliCloudAuthServiceFactory = ({
       }
     );
 
-    await validateIdentityUpdateForSuperAdminPrivileges(identityId, isActorSuperAdmin);
+    await validateIdentityUpdateForSuperAdminPrivileges(instanceConfigService, identityId, isActorSuperAdmin);
 
     const revokedIdentityAliCloudAuth = await identityAliCloudAuthDAL.transaction(async (tx) => {
       const deletedAliCloudAuth = await identityAliCloudAuthDAL.delete({ identityId }, tx);

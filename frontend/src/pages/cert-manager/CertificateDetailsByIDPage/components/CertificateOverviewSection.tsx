@@ -1,4 +1,5 @@
 /* eslint-disable no-nested-ternary */
+import type { ReactNode } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { format } from "date-fns";
 import { ExternalLinkIcon } from "lucide-react";
@@ -34,6 +35,7 @@ import { CertificateMetadataSection } from "./CertificateMetadataSection";
 
 type Props = {
   certificateId: string;
+  pendingRevocationBadge?: ReactNode;
 };
 
 const formatDateUTC = (dateString: string) => {
@@ -52,19 +54,29 @@ const getProviderReference = (metadata?: TCertificateExternalMetadata | null) =>
     case CaType.DIGICERT:
       return {
         provider: "DigiCert CertCentral",
-        label: "Order ID",
-        value: String(metadata.orderId)
+        references: [
+          { label: "Order ID", value: String(metadata.orderId) },
+          ...(metadata.certificateId !== undefined
+            ? [{ label: "DigiCert Certificate ID", value: String(metadata.certificateId) }]
+            : [])
+        ]
       };
     case CaType.GODADDY:
-      return { provider: "GoDaddy", label: "Certificate ID", value: metadata.certificateId };
+      return {
+        provider: "GoDaddy",
+        references: [{ label: "Certificate ID", value: metadata.certificateId }]
+      };
     case CaType.AWS_ACM_PUBLIC_CA:
-      return { provider: "AWS ACM Public CA", label: "Certificate ARN", value: metadata.arn };
+      return {
+        provider: "AWS ACM Public CA",
+        references: [{ label: "Certificate ARN", value: metadata.arn }]
+      };
     default:
       return null;
   }
 };
 
-export const CertificateOverviewSection = ({ certificateId }: Props) => {
+export const CertificateOverviewSection = ({ certificateId, pendingRevocationBadge }: Props) => {
   const { orgId } = useParams({
     from: "/_authenticate/_inject-org-details/_org-layout/organizations/$orgId/cert-manager/_cert-manager-layout/certificates/$certificateId"
   });
@@ -142,6 +154,7 @@ export const CertificateOverviewSection = ({ certificateId }: Props) => {
                   {certificate.deletedAt && certificate.status === CertStatus.REVOKED && (
                     <Badge variant="danger">Revoked</Badge>
                   )}
+                  {pendingRevocationBadge}
                 </div>
               </DetailValue>
             </Detail>
@@ -267,10 +280,12 @@ export const CertificateOverviewSection = ({ certificateId }: Props) => {
                   <DetailLabel>Provider</DetailLabel>
                   <DetailValue>{providerReference.provider}</DetailValue>
                 </Detail>
-                <Detail>
-                  <DetailLabel>{providerReference.label}</DetailLabel>
-                  <DetailValue className="font-mono">{providerReference.value}</DetailValue>
-                </Detail>
+                {providerReference.references.map((reference) => (
+                  <Detail key={reference.label}>
+                    <DetailLabel>{reference.label}</DetailLabel>
+                    <DetailValue className="font-mono">{reference.value}</DetailValue>
+                  </Detail>
+                ))}
               </>
             )}
             <Detail>

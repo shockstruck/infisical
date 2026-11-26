@@ -32,7 +32,10 @@ import { verifyAuth } from "@app/server/plugins/auth/verify-auth";
 import { ActorType, AuthMode } from "@app/services/auth/auth-type";
 import { CaStatus } from "@app/services/certificate-authority/certificate-authority-enums";
 import { sanitizedCertificateTemplate } from "@app/services/certificate-template/certificate-template-schema";
-import { SanitizedCertificateSchema } from "@app/services/certificate/certificate-schemas";
+import {
+  CertificateSearchResultSchema,
+  SanitizedCertificateSchema
+} from "@app/services/certificate/certificate-schemas";
 import { validateMicrosoftTeamsChannelsSchema } from "@app/services/microsoft-teams/microsoft-teams-fns";
 import { sanitizedPkiSubscriber } from "@app/services/pki-subscriber/pki-subscriber-schema";
 import { ProjectFilterType, SearchProjectSortBy } from "@app/services/project/project-types";
@@ -327,8 +330,11 @@ export const registerProjectRouter = async (server: FastifyZodProvider) => {
         includeRoles: z
           .enum(["true", "false"])
           .default("false")
-          .transform((value) => value === "true"),
-        type: z.nativeEnum(ProjectType).optional()
+          .transform((value) => value === "true")
+          .describe(PROJECTS.LIST.includeRoles),
+        type: z.nativeEnum(ProjectType).optional().describe(PROJECTS.LIST.type),
+        limit: z.coerce.number().int().min(1).max(100).optional().describe(PROJECTS.LIST.limit),
+        offset: z.coerce.number().int().min(0).default(0).describe(PROJECTS.LIST.offset)
       }),
       response: {
         200: z.object({
@@ -336,21 +342,24 @@ export const registerProjectRouter = async (server: FastifyZodProvider) => {
             .extend({
               roles: ProjectRolesSchema.array().optional()
             })
-            .array()
+            .array(),
+          totalCount: z.number().describe(PROJECTS.LIST.totalCount)
         })
       }
     },
     onRequest: verifyAuth([AuthMode.JWT, AuthMode.API_KEY, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
-      const projects = await server.services.project.getProjects({
+      const { projects, totalCount } = await server.services.project.getProjects({
         includeRoles: req.query.includeRoles,
         actorId: req.permission.id,
         actorAuthMethod: req.permission.authMethod,
         actor: req.permission.type,
         actorOrgId: req.permission.orgId,
-        type: req.query.type
+        type: req.query.type,
+        limit: req.query.limit,
+        offset: req.query.offset
       });
-      return { projects };
+      return { projects, totalCount };
     }
   });
 
@@ -1552,7 +1561,7 @@ export const registerProjectRouter = async (server: FastifyZodProvider) => {
     },
     schema: {
       deprecated: true,
-      description: "Deprecated: Use POST /:projectId/certificates/search instead.",
+      description: "Deprecated: Use POST /api/v1/cert-manager/certificates/search instead.",
       hide: true,
       operationId: "listProjectCertificates",
       tags: [ApiDocsTags.PkiCertificates],
@@ -1581,7 +1590,9 @@ export const registerProjectRouter = async (server: FastifyZodProvider) => {
       }),
       response: {
         200: z.object({
-          certificates: z.array(SanitizedCertificateSchema.extend({ hasPrivateKey: z.boolean() })),
+          certificates: z.array(
+            SanitizedCertificateSchema.extend({ hasPrivateKey: z.boolean(), canRenewFromCsr: z.boolean() })
+          ),
           totalCount: z.number()
         })
       }
@@ -1611,9 +1622,10 @@ export const registerProjectRouter = async (server: FastifyZodProvider) => {
     },
     schema: {
       hide: false,
+      deprecated: true,
       operationId: "searchProjectCertificates",
       tags: [ApiDocsTags.PkiCertificates],
-      description: "Search and filter certificates within a project.",
+      description: "Deprecated: Use POST /api/v1/cert-manager/certificates/search instead.",
       params: z.object({
         projectId: z.string().trim()
       }),
@@ -1672,15 +1684,7 @@ export const registerProjectRouter = async (server: FastifyZodProvider) => {
       }),
       response: {
         200: z.object({
-          certificates: z.array(
-            SanitizedCertificateSchema.extend({
-              hasPrivateKey: z.boolean(),
-              caName: z.string().nullable().optional(),
-              profileName: z.string().nullable().optional(),
-              enrollmentType: z.string().nullable().optional(),
-              applicationName: z.string().nullable().optional()
-            })
-          ),
+          certificates: z.array(CertificateSearchResultSchema),
           totalCount: z.number()
         })
       }

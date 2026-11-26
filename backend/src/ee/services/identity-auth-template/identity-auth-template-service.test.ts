@@ -1,6 +1,8 @@
 import { createMongoAbility, ForbiddenError, MongoAbility, RawRuleOf } from "@casl/ability";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { FakeInstanceConfigService } from "@app/domains/platform/instance-config-core/ce/testing/fake-instance-config-service";
+import { FakeLicenseService } from "@app/domains/platform/license/ce/testing/fake-license-service";
 import {
   OrgPermissionIdentityActions,
   OrgPermissionMachineIdentityAuthTemplateActions,
@@ -13,7 +15,8 @@ import { IdentityKubernetesAuthTokenReviewMode } from "@app/services/identity-ku
 import { IdentityAuthTemplateMethod } from "./identity-auth-template-enums";
 import { identityAuthTemplateServiceFactory } from "./identity-auth-template-service";
 
-vi.mock("@app/lib/config/env", () => ({
+vi.mock("@app/lib/config/env", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   getConfig: () => ({ isDevelopmentMode: false, ALLOW_INTERNAL_IP_CONNECTIONS: false })
 }));
 
@@ -26,6 +29,13 @@ vi.mock("node:dns/promises", () => ({
     )
   }
 }));
+
+// Reassigned per test: the instance admin identities the service under test reads.
+let instanceConfigService = new FakeInstanceConfigService();
+
+beforeEach(() => {
+  instanceConfigService = new FakeInstanceConfigService({ settings: { adminIdentityIds: [] } });
+});
 
 const ORG_ID = "org-id";
 const TEMPLATE_ID = "template-id";
@@ -104,6 +114,7 @@ const createService = ({
   const getProjectPermission = vi.fn().mockResolvedValue({ permission: createMongoAbility(projectRules) });
 
   const service = identityAuthTemplateServiceFactory({
+    instanceConfigService,
     identityAuthTemplateDAL,
     identityLdapAuthDAL,
     identityKubernetesAuthDAL,
@@ -116,15 +127,17 @@ const createService = ({
       getProjectPermission,
       getActorGrantAbilities: vi.fn().mockResolvedValue([])
     },
-    kmsService: {
+    kmsDataKeyService: {
       createCipherPairWithDataKey: vi.fn().mockResolvedValue({
         encryptor: ({ plainText }: { plainText: Buffer }) => ({ cipherTextBlob: plainText }),
         decryptor: ({ cipherTextBlob }: { cipherTextBlob: Buffer }) => cipherTextBlob
       })
     },
-    licenseService: {
-      getPlan: vi.fn().mockResolvedValue({ machineIdentityAuthTemplates: true, gateway: true, gatewayPool: true })
-    },
+    licenseService: new FakeLicenseService().setPlan(ORG_ID, {
+      machineIdentityAuthTemplates: true,
+      gateway: true,
+      gatewayPool: true
+    }),
     auditLogService: { createAuditLog: auditLogCreate }
   } as unknown as Parameters<typeof identityAuthTemplateServiceFactory>[0]);
 
@@ -552,6 +565,34 @@ describe("identityAuthTemplateServiceFactory linked identity authorization", () 
 
     expect(identityAuthTemplateDAL.updateById).toHaveBeenCalledTimes(1);
     expect(identityLdapAuthDAL.updateByTemplateId).not.toHaveBeenCalled();
+  });
+
+  it("refuses a field patch when a linked identity is a server admin and the editor is not", async () => {
+    instanceConfigService = new FakeInstanceConfigService({ settings: { adminIdentityIds: ["identity-id"] } });
+    const { service, identityAuthTemplateDAL, identityLdapAuthDAL } = createLdapService();
+
+    await expect(patchTemplate(service, { searchBase: "dc=other" })).rejects.toThrow(
+      "Auth template 'auth-template' is linked to server admin identity 'identity'. Ask a server admin to update it, or unlink the identity from the template first."
+    );
+    expect(identityAuthTemplateDAL.updateById).not.toHaveBeenCalled();
+    expect(identityLdapAuthDAL.updateByTemplateId).not.toHaveBeenCalled();
+  });
+
+  it("propagates to a linked server admin identity when the editor is a server admin", async () => {
+    instanceConfigService = new FakeInstanceConfigService({ settings: { adminIdentityIds: ["identity-id"] } });
+    const { service, identityLdapAuthDAL } = createLdapService();
+
+    await service.updateTemplate({
+      templateId: TEMPLATE_ID,
+      templateFields: { searchBase: "dc=other" },
+      actorId: "actor-id",
+      actor: "user",
+      actorAuthMethod: undefined,
+      actorOrgId: ORG_ID,
+      isActorSuperAdmin: true
+    } as unknown as Parameters<typeof service.updateTemplate>[0]);
+
+    expect(identityLdapAuthDAL.updateByTemplateId).toHaveBeenCalledTimes(1);
   });
 
   it("records the editor, not the platform, on the per-identity audit entries", async () => {

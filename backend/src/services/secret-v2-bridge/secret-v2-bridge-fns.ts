@@ -13,22 +13,21 @@ import {
   TSecretsV2,
   TSecretVersionsV2
 } from "@app/db/schemas";
+import { EventModificationType } from "@app/domains/platform/events/ce/module";
 import { throwIfMissingSecretReadValueOrDescribePermission } from "@app/ee/services/permission/permission-fns";
 import { ProjectPermissionSecretActions, ProjectPermissionSub } from "@app/ee/services/permission/project-permission";
-import { shouldApplyPolicy } from "@app/ee/services/secret-approval-policy/secret-approval-policy-fns";
+import { shouldApplyPolicy } from "@app/ee/services/secret-change-policy/secret-change-policy-fns";
 import {
   InternalMetadataType,
   TInternalMetadata
-} from "@app/ee/services/secret-approval-request/secret-approval-request-types";
+} from "@app/ee/services/secret-change-request/secret-change-request-types";
 import { BadRequestError, NotFoundError, throwIfAnySettledClientClosed } from "@app/lib/errors";
 import { groupBy } from "@app/lib/fn";
+import { TEventEmitter } from "@app/lib/knex/event-emitter";
 import { logger } from "@app/lib/logger";
 
 import { ActorType } from "../auth/auth-type";
-import { EventModificationType } from "../event-outbox/event-definition";
-import { TEventEmitter } from "../event-outbox/event-outbox-types";
 import { CommitType, TFolderCommitServiceFactory } from "../folder-commit/folder-commit-service";
-import { KmsDataKey } from "../kms/kms-types";
 import { TProjectEnvDALFactory } from "../project-env/project-env-dal";
 import { TReminderMove } from "../reminder/reminder-types";
 import { ResourceMetadataWithEncryptionDTO } from "../resource-metadata/resource-metadata-schema";
@@ -40,7 +39,7 @@ import {
 } from "../secret-validation-rule/secret-validation-rule-errors";
 import { INFISICAL_SECRET_VALUE_HIDDEN_MASK } from "../secret/secret-fns";
 import { TSecretQueueFactory } from "../secret/secret-queue";
-import { createSecretBlindIndexer, TSecretBlindIndexer, TSecretValueBlindIndexes } from "./secret-blind-index-fns";
+import { TSecretBlindIndexer, TSecretValueBlindIndexes } from "./secret-blind-index-fns";
 import { emitSecretsModified, secretModifiedEvents } from "./secret-events";
 import { expandSecretReferencesFactory, getAllSecretReferences } from "./secret-reference-fns";
 import { TSecretV2BridgeDALFactory } from "./secret-v2-bridge-dal";
@@ -54,6 +53,7 @@ import {
   TFnSecretMoveResult
 } from "./secret-v2-bridge-types";
 import { TSecretVersionV2DALFactory } from "./secret-version-dal";
+import { prepareSecretWriteCiphers } from "./secret-write-cipher-fns";
 
 export const shouldUseSecretV2Bridge = (version: number) => version === 3;
 
@@ -1010,11 +1010,13 @@ export const fnUpdateSecretLinkedReferences = async ({
       tx
     );
 
-    const changes = secretVersions.map((sv) => ({
-      type: CommitType.ADD,
-      isUpdate: true,
-      secretVersionId: sv.id
-    }));
+    const changes = secretVersions
+      .filter(({ type }) => type === SecretType.Shared)
+      .map((sv) => ({
+        type: CommitType.ADD,
+        isUpdate: true,
+        secretVersionId: sv.id
+      }));
 
     if (changes.length > 0) {
       await folderCommitService.createCommit(
@@ -1424,11 +1426,13 @@ export const fnUpdateMovedSecretReferences = async ({
       tx
     );
 
-    const changes = secretVersions.map((sv) => ({
-      type: CommitType.ADD,
-      isUpdate: true,
-      secretVersionId: sv.id
-    }));
+    const changes = secretVersions
+      .filter(({ type }) => type === SecretType.Shared)
+      .map((sv) => ({
+        type: CommitType.ADD,
+        isUpdate: true,
+        secretVersionId: sv.id
+      }));
 
     if (changes.length > 0) {
       await folderCommitService.createCommit(
@@ -1681,7 +1685,7 @@ export const fnSecretMove = async (dto: TFnSecretMove): Promise<TFnSecretMoveRes
     actorOrgId,
     permission,
     tx,
-    kmsService,
+    kmsDataKeyService,
     folderDAL,
     secretDAL,
     secretVersionDAL,
@@ -1690,8 +1694,8 @@ export const fnSecretMove = async (dto: TFnSecretMove): Promise<TFnSecretMoveRes
     resourceMetadataDAL,
     folderCommitService,
     eventEmitter,
-    secretApprovalPolicyService,
-    secretApprovalRequestCreationFns,
+    secretChangePolicyService,
+    secretChangeRequestService,
     secretQueueService,
     reminderService,
     secretValidationRuleService
@@ -1773,12 +1777,13 @@ export const fnSecretMove = async (dto: TFnSecretMove): Promise<TFnSecretMoveRes
     }
   });
 
-  const { encryptor: secretManagerEncryptor, decryptor: secretManagerDecryptor } =
-    await kmsService.createCipherPairWithDataKey({
-      type: KmsDataKey.SecretManager,
-      projectId
-    });
-  const blindIndexer = await createSecretBlindIndexer({ projectId, orgId: actorOrgId, kmsService, tx });
+  const { secretManager, blindIndexer } = await prepareSecretWriteCiphers({
+    kmsDataKeyService,
+    projectId,
+    orgId: actorOrgId,
+    tx
+  });
+  const { encryptor: secretManagerEncryptor, decryptor: secretManagerDecryptor } = secretManager;
   const decryptedSourceSecrets = sourceSecrets.map((secret) => ({
     ...secret,
     value: secret.encryptedValue
@@ -1788,7 +1793,7 @@ export const fnSecretMove = async (dto: TFnSecretMove): Promise<TFnSecretMoveRes
 
   // Looked up before the destination is written, because how the reminders' alerts are carried over
   // depends on whether the source keeps its secrets.
-  const sourceFolderPolicy = await secretApprovalPolicyService.getSecretApprovalPolicy(
+  const sourceFolderPolicy = await secretChangePolicyService.getSecretApprovalPolicy(
     projectId,
     sourceFolder.environment.slug,
     sourceFolder.path
@@ -1917,7 +1922,7 @@ export const fnSecretMove = async (dto: TFnSecretMove): Promise<TFnSecretMoveRes
     });
   }
 
-  const destinationFolderPolicy = await secretApprovalPolicyService.getSecretApprovalPolicy(
+  const destinationFolderPolicy = await secretChangePolicyService.getSecretApprovalPolicy(
     projectId,
     destinationFolder.environment.slug,
     destinationFolder.path,
@@ -1966,7 +1971,7 @@ export const fnSecretMove = async (dto: TFnSecretMove): Promise<TFnSecretMoveRes
           : {})
       };
     });
-    await secretApprovalRequestCreationFns.createSecretApprovalRequestV2Bridge(
+    await secretChangeRequestService.createSecretApprovalRequestV2Bridge(
       { policy: destinationFolderPolicy, folderId: destinationFolder.id, actor, actorId, commits },
       tx
     );
@@ -2117,7 +2122,7 @@ export const fnSecretMove = async (dto: TFnSecretMove): Promise<TFnSecretMoveRes
       };
     });
 
-    await secretApprovalRequestCreationFns.createSecretApprovalRequestV2Bridge(
+    await secretChangeRequestService.createSecretApprovalRequestV2Bridge(
       { policy: sourceFolderPolicy, folderId: sourceFolder.id, actor, actorId, commits },
       tx
     );
