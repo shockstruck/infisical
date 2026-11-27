@@ -60,8 +60,10 @@ import { BitbucketConnectionMethod } from "@app/hooks/api/appConnections/types/b
 import { ChecklyConnectionMethod } from "@app/hooks/api/appConnections/types/checkly-connection";
 import { ChefConnectionMethod } from "@app/hooks/api/appConnections/types/chef-connection";
 import { CircleCIConnectionMethod } from "@app/hooks/api/appConnections/types/circleci-connection";
+import { ClickHouseConnectionMethod } from "@app/hooks/api/appConnections/types/clickhouse-connection";
 import { Cloud66ConnectionMethod } from "@app/hooks/api/appConnections/types/cloud-66-connection";
 import { ConvexConnectionMethod } from "@app/hooks/api/appConnections/types/convex-connection";
+import { CoolifyConnectionMethod } from "@app/hooks/api/appConnections/types/coolify-connection";
 import { DatadogConnectionMethod } from "@app/hooks/api/appConnections/types/datadog-connection";
 import { DigiCertConnectionMethod } from "@app/hooks/api/appConnections/types/digicert-connection";
 import { DigitalOceanConnectionMethod } from "@app/hooks/api/appConnections/types/digital-ocean";
@@ -75,6 +77,8 @@ import { HasuraCloudConnectionMethod } from "@app/hooks/api/appConnections/types
 import { HerokuConnectionMethod } from "@app/hooks/api/appConnections/types/heroku-connection";
 import { HpeIloConnectionMethod } from "@app/hooks/api/appConnections/types/hpe-ilo-connection";
 import { ImpervaConnectionMethod } from "@app/hooks/api/appConnections/types/imperva-connection";
+import { IncidentIoConnectionMethod } from "@app/hooks/api/appConnections/types/incident-io-connection";
+import { JenkinsConnectionMethod } from "@app/hooks/api/appConnections/types/jenkins-connection";
 import { JiraConnectionMethod } from "@app/hooks/api/appConnections/types/jira-connection";
 import { KeeperConnectionMethod } from "@app/hooks/api/appConnections/types/keeper-connection";
 import { KempLoadMasterConnectionMethod } from "@app/hooks/api/appConnections/types/kemp-loadmaster-connection";
@@ -149,7 +153,7 @@ export const APP_CONNECTION_MAP: Record<
     name: "GCP",
     image: "Google Cloud Platform.png",
     category: "GOOGLE CLOUD",
-    description: "Authenticate via service account impersonation."
+    description: "Authenticate via workload identity federation or service account impersonation."
   },
   [AppConnection.AzureKeyVault]: {
     name: "Azure Key Vault",
@@ -421,6 +425,12 @@ export const APP_CONNECTION_MAP: Record<
     category: "DATABASE",
     description: "Connect to a MongoDB database."
   },
+  [AppConnection.ClickHouse]: {
+    name: "ClickHouse",
+    image: "ClickHouse.png",
+    category: "DATABASE",
+    description: "Connect to a ClickHouse database."
+  },
   [AppConnection.LaravelForge]: {
     name: "Laravel Forge",
     image: "Laravel Forge.png",
@@ -576,7 +586,7 @@ export const APP_CONNECTION_MAP: Record<
     description: "GraphQL API and data access for Hasura Cloud."
   },
   [AppConnection.OVH]: {
-    name: "OVH Cloud",
+    name: "OVHcloud",
     image: "OVH.png",
     category: "CLOUD",
     description: "Account and service access for OVHcloud."
@@ -710,6 +720,24 @@ export const APP_CONNECTION_MAP: Record<
     image: "Jira.svg",
     category: "PRODUCTIVITY",
     description: "Atlassian Jira Cloud and Data Center."
+  },
+  [AppConnection.IncidentIo]: {
+    name: "incident.io",
+    image: "incident.io.png",
+    category: "MONITORING",
+    description: "On-call schedules for PAM auto-approval."
+  },
+  [AppConnection.Jenkins]: {
+    name: "Jenkins",
+    image: "Jenkins.png",
+    category: "CI/CD",
+    description: "Credentials and folder access for Jenkins."
+  },
+  [AppConnection.Coolify]: {
+    name: "Coolify",
+    image: "Coolify.png",
+    category: "HOSTING",
+    description: "Application, service and database access for Coolify."
   }
 };
 
@@ -774,6 +802,11 @@ export const POPULAR_APP_CONNECTIONS: AppConnection[] = [
   AppConnection.Vercel
 ];
 
+export const isFederatedAppConnection = ({ app, method }: Pick<TAppConnection, "app" | "method">) =>
+  (app === AppConnection.AzureKeyVault &&
+    method === AzureKeyVaultConnectionMethod.ManagedIdentity) ||
+  (app === AppConnection.GCP && method === GcpConnectionMethod.WorkloadIdentityFederation);
+
 export const getAppConnectionMethodDetails = (method: TAppConnection["method"]) => {
   switch (method) {
     case GitHubConnectionMethod.App:
@@ -801,6 +834,8 @@ export const getAppConnectionMethodDetails = (method: TAppConnection["method"]) 
       return { name: "Assume Role", icon: UserIcon };
     case GcpConnectionMethod.ServiceAccountImpersonation:
       return { name: "Service Account Impersonation", icon: UserIcon };
+    case GcpConnectionMethod.WorkloadIdentityFederation:
+      return { name: "Workload Identity Federation", icon: IdCardIcon };
     case DatabricksConnectionMethod.ServicePrincipal:
       return { name: "Service Principal", icon: UserIcon };
     case CamundaConnectionMethod.ClientCredentials:
@@ -823,6 +858,8 @@ export const getAppConnectionMethodDetails = (method: TAppConnection["method"]) 
     case RundeckConnectionMethod.ApiToken:
     case PortainerConnectionMethod.ApiToken:
     case JiraConnectionMethod.ApiToken:
+    case JenkinsConnectionMethod.ApiToken:
+    case CoolifyConnectionMethod.ApiToken:
       return { name: "API Token", icon: KeyRoundIcon };
     case VenafiConnectionMethod.ApiKey:
       return { name: "API Key", icon: KeyRoundIcon };
@@ -834,6 +871,7 @@ export const getAppConnectionMethodDetails = (method: TAppConnection["method"]) 
     case AdcsConnectionMethod.UsernamePassword:
     case RedisConnectionMethod.UsernameAndPassword:
     case MongoDBConnectionMethod.UsernameAndPassword:
+    case ClickHouseConnectionMethod.UsernameAndPassword:
     case UltraDNSConnectionMethod.UsernamePassword:
       return { name: "Username & Password", icon: LockIcon };
     case SnowflakeConnectionMethod.UsernameAndToken:
@@ -880,6 +918,7 @@ export const getAppConnectionMethodDetails = (method: TAppConnection["method"]) 
     case DaytonaConnectionMethod.ApiKey:
     case PowerDnsConnectionMethod.ApiKey:
     case KeeperConnectionMethod.ApiKey:
+    case IncidentIoConnectionMethod.ApiKey:
       return { name: "API Key", icon: KeyRoundIcon };
     case ChefConnectionMethod.UserKey:
       return { name: "User Key", icon: KeyRoundIcon };
@@ -927,6 +966,8 @@ export const getAppConnectionMethodDetails = (method: TAppConnection["method"]) 
       return { name: "API Key", icon: KeyRoundIcon };
     case OVHConnectionMethod.Certificate:
       return { name: "Certificate", icon: FileBadgeIcon };
+    case OVHConnectionMethod.Token:
+      return { name: "Token", icon: KeyRoundIcon };
     default:
       throw new Error(`Unhandled App Connection Method: ${method}`);
   }

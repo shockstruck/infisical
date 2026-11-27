@@ -1,5 +1,6 @@
 import { format } from "date-fns";
 
+import { getInitials } from "@app/helpers/string";
 import {
   TFolderAccess,
   TFolderAccessIdentity,
@@ -20,18 +21,12 @@ export type TFolderAccessActor = {
   // with access: only the roles granting access on this folder; without access: every role
   roles: TFolderAccessRole[];
   access: TFolderAccess | null;
+  // the active grant that applies to subfolders on the nearest folder above this one
+  inheritedAccess: TFolderAccess | null;
 };
 
 const sortRoles = (roles: TFolderAccessRole[]) =>
   [...roles].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
-
-const initialsOf = (value: string) =>
-  value
-    .split(/[\s@._-]+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("") || "?";
 
 export const toUserActor = (user: TFolderAccessUser): TFolderAccessActor => {
   const fullName = [user.firstName, user.lastName].filter(Boolean).join(" ").trim();
@@ -42,10 +37,11 @@ export const toUserActor = (user: TFolderAccessUser): TFolderAccessActor => {
     membershipId: user.membership.id,
     name,
     subtitle: user.email ?? user.username,
-    initials: initialsOf(name),
+    initials: getInitials(name),
     isProjectAdmin: user.membership.isProjectAdmin,
     roles: sortRoles(user.membership.roles),
-    access: user.folderRBACAccess
+    access: user.folderRBACAccess,
+    inheritedAccess: user.inheritedFolderRBACAccess
   };
 };
 
@@ -55,10 +51,11 @@ export const toIdentityActor = (identity: TFolderAccessIdentity): TFolderAccessA
   membershipId: identity.membership.id,
   name: identity.name,
   subtitle: "Machine identity",
-  initials: initialsOf(identity.name),
+  initials: getInitials(identity.name),
   isProjectAdmin: identity.membership.isProjectAdmin,
   roles: sortRoles(identity.membership.roles),
-  access: identity.folderRBACAccess
+  access: identity.folderRBACAccess,
+  inheritedAccess: identity.inheritedFolderRBACAccess
 });
 
 // organization members outside the project have no membership, roles, or grant here yet
@@ -72,10 +69,11 @@ export const toOrgUserActor = ({ user, inviteEmail, status }: OrgUser): TFolderA
     membershipId: null,
     name,
     subtitle: status === "invited" ? "Invite pending" : email,
-    initials: initialsOf(name),
+    initials: getInitials(name),
     isProjectAdmin: false,
     roles: [],
-    access: null
+    access: null,
+    inheritedAccess: null
   };
 };
 
@@ -91,10 +89,11 @@ export const toOrgIdentityActor = ({
   membershipId: null,
   name,
   subtitle: "Machine identity",
-  initials: initialsOf(name),
+  initials: getInitials(name),
   isProjectAdmin: false,
   roles: [],
-  access: null
+  access: null,
+  inheritedAccess: null
 });
 
 export const byName = (a: TFolderAccessActor, b: TFolderAccessActor) =>
@@ -167,4 +166,33 @@ export const formatExpirationTime = (expiresAt: string, now: number, suffix?: st
 export const normalizeFolderPath = (path: string) => {
   const segments = path.trim().split("/").filter(Boolean);
   return segments.length ? `/${segments.join("/")}` : "/";
+};
+
+export const isRootFolderPath = (path: string) => normalizeFolderPath(path) === "/";
+
+export const subfolderToggleLabelOf = (path: string) =>
+  isRootFolderPath(path) ? "Apply to Environment" : "Apply to Subfolders";
+
+const isStrictAncestorPath = (ancestor: string, path: string) =>
+  ancestor !== path && (ancestor === "/" || path.startsWith(`${ancestor}/`));
+
+const folderDepthOf = (path: string) => path.split("/").filter(Boolean).length;
+
+export const findInheritedGrant = (
+  grants: TFolderAccess[],
+  environment: string,
+  folderPath: string
+) => {
+  const path = normalizeFolderPath(folderPath);
+  return (
+    grants
+      .filter(
+        (grant) =>
+          grant.environment === environment &&
+          grant.isPermissionRecursive &&
+          grantStateOf(grant) !== "expired" &&
+          isStrictAncestorPath(normalizeFolderPath(grant.secretPath), path)
+      )
+      .sort((a, b) => folderDepthOf(b.secretPath) - folderDepthOf(a.secretPath))[0] ?? null
+  );
 };

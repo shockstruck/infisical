@@ -2,13 +2,261 @@ import { describe, expect, it } from "vitest";
 
 import { ActorType } from "@app/hooks/api/auditLogs/enums";
 import { CertStatus } from "@app/hooks/api/certificates/enums";
+import { ProjectType } from "@app/hooks/api/projects/types";
 
 import {
+  canRenewOnExistingKeyPair,
+  getApplicationCertificateAccess,
   getCertificateDeletedBySummary,
   getCertificateDeletionWarning,
   getCertificateDisplayStatus,
-  isRemovedFromSyncDestination
+  getPendingRevocationRequestLink,
+  getPendingRevocationState,
+  isRemovedFromSyncDestination,
+  PENDING_REVOCATION_REASON,
+  REPLACEABLE_REVOCATION_REASON
 } from "./CertificatesTable.utils";
+
+// Each rule is "<action>" on certificates, or "<action>:<subject>".
+const abilityAllowing = (...rules: string[]) => ({
+  can: (action: string, subjectType: string) =>
+    rules.includes(subjectType === "certificates" ? action : `${action}:${subjectType}`)
+});
+
+describe("getApplicationCertificateAccess", () => {
+  const applicationName = "payments";
+
+  it("blocks every action for a project admin who is not on the application", () => {
+    const access = getApplicationCertificateAccess({
+      applicationName,
+      permission: abilityAllowing("read", "list")
+    });
+
+    expect(access).toMatchObject({
+      canRenew: false,
+      canEdit: false,
+      canDelete: false,
+      canManagePkiSyncs: false
+    });
+    expect(access.managePkiSyncsBlockedReason).toBe(
+      "You need the Admin role on payments to manage PKI syncs for this certificate."
+    );
+    expect(access.renewBlockedReason).toBe(
+      "You need the Operator or Admin role on payments to renew this certificate."
+    );
+    expect(access.editMetadataBlockedReason).toBe(
+      "You need the Operator or Admin role on payments to edit this certificate's metadata."
+    );
+    expect(access.revokeBlockedReason).toBe(
+      "You need the Admin role on payments to revoke this certificate."
+    );
+    expect(access.deleteBlockedReason).toBe(
+      "You need the Admin role on payments to delete this certificate."
+    );
+  });
+
+  it("lets an operator renew but not revoke or delete", () => {
+    const access = getApplicationCertificateAccess({
+      applicationName,
+      permission: abilityAllowing(
+        "read",
+        "list",
+        "create",
+        "edit",
+        "import",
+        "read:pki-syncs",
+        "list:pki-syncs",
+        "sync-certificates:pki-syncs"
+      )
+    });
+
+    expect(access).toMatchObject({
+      canRenew: true,
+      canEdit: true,
+      canDelete: false,
+      canManagePkiSyncs: false
+    });
+    expect(access.managePkiSyncsBlockedReason).toBeDefined();
+    expect(access.renewBlockedReason).toBeUndefined();
+    expect(access.editBlockedReason).toBeUndefined();
+    expect(access.editMetadataBlockedReason).toBeUndefined();
+    expect(access.deleteBlockedReason).toBeDefined();
+  });
+
+  it("allows everything for an application admin", () => {
+    const access = getApplicationCertificateAccess({
+      applicationName,
+      permission: abilityAllowing("read", "list", "create", "edit", "delete", "edit:pki-syncs")
+    });
+
+    expect(access).toEqual({
+      canRenew: true,
+      canEdit: true,
+      canDelete: true,
+      canRevoke: true,
+      canManagePkiSyncs: true
+    });
+  });
+
+  it("keeps actions disabled without blaming a role while the ability loads", () => {
+    const access = getApplicationCertificateAccess({ applicationName });
+
+    expect(access).toEqual({
+      canRenew: false,
+      canEdit: false,
+      canDelete: false,
+      canRevoke: false,
+      canManagePkiSyncs: false
+    });
+  });
+
+  describe("revoke", () => {
+    const operator = abilityAllowing("read", "list", "create", "edit", "request-revocation");
+
+    it("lets an operator request a revocation when a revocation policy covers the certificate", () => {
+      const access = getApplicationCertificateAccess({
+        applicationName,
+        permission: operator,
+        isRevocationApprovalRequired: true
+      });
+
+      expect(access.canRevoke).toBe(true);
+      expect(access.canDelete).toBe(false);
+      expect(access.revokeBlockedReason).toBeUndefined();
+    });
+
+    it("blocks an operator when no revocation policy covers the certificate", () => {
+      const access = getApplicationCertificateAccess({
+        applicationName,
+        permission: operator,
+        isRevocationApprovalRequired: false
+      });
+
+      expect(access.canRevoke).toBe(false);
+      expect(access.revokeBlockedReason).toBe(
+        "You need the Admin role on payments to revoke this certificate."
+      );
+    });
+
+    it("blocks a member who can't request a revocation, even when a policy covers the certificate", () => {
+      const access = getApplicationCertificateAccess({
+        applicationName,
+        permission: abilityAllowing("read", "list"),
+        isRevocationApprovalRequired: true
+      });
+
+      expect(access.canRevoke).toBe(false);
+      expect(access.revokeBlockedReason).toBe(
+        "You need the Operator or Admin role on payments to revoke this certificate."
+      );
+    });
+
+    it("lets an admin revoke whether or not a policy covers the certificate", () => {
+      [true, false].forEach((isRevocationApprovalRequired) => {
+        const access = getApplicationCertificateAccess({
+          applicationName,
+          permission: abilityAllowing("read", "list", "delete"),
+          isRevocationApprovalRequired
+        });
+
+        expect(access.canRevoke).toBe(true);
+        expect(access.revokeBlockedReason).toBeUndefined();
+      });
+    });
+  });
+});
+
+describe("getPendingRevocationRequestLink", () => {
+  it("opens the request from the Approval Requests inbox, not the legacy Approvals page", () => {
+    const link = getPendingRevocationRequestLink(
+      { id: "project-1", orgId: "org-1", type: ProjectType.CertificateManager },
+      "request-1"
+    );
+
+    expect(link).toMatchObject({ params: { _splat: "approvals/request-1" } });
+    expect(link.search).toEqual({ policyType: "cert-revocation", from: "root-requests" });
+  });
+});
+
+describe("getPendingRevocationState", () => {
+  const decidable = { approversCanNoLongerApprove: false };
+  const undecidable = { approversCanNoLongerApprove: true };
+
+  it("blocks Revoke while a revocation policy covers the certificate", () => {
+    expect(
+      getPendingRevocationState({
+        pendingRequest: decidable,
+        isRevoked: false,
+        isRevocationApprovalRequired: true
+      })
+    ).toEqual({
+      isPending: true,
+      revokeBlockedReason: PENDING_REVOCATION_REASON,
+      revokeReplacesRequestReason: undefined
+    });
+  });
+
+  it("lets Revoke through and says it replaces a request its approvers can no longer approve", () => {
+    expect(
+      getPendingRevocationState({
+        pendingRequest: undecidable,
+        isRevoked: false,
+        isRevocationApprovalRequired: true
+      })
+    ).toEqual({
+      isPending: true,
+      revokeBlockedReason: undefined,
+      revokeReplacesRequestReason: REPLACEABLE_REVOCATION_REASON
+    });
+  });
+
+  it("shows the request but lets Revoke through once no policy covers the certificate", () => {
+    [decidable, undecidable].forEach((pendingRequest) => {
+      expect(
+        getPendingRevocationState({
+          pendingRequest,
+          isRevoked: false,
+          isRevocationApprovalRequired: false
+        })
+      ).toEqual({
+        isPending: true,
+        revokeBlockedReason: undefined,
+        revokeReplacesRequestReason: undefined
+      });
+    });
+  });
+
+  it("ignores a request left on a certificate that is already revoked", () => {
+    [decidable, undecidable].forEach((pendingRequest) => {
+      [true, false].forEach((isRevocationApprovalRequired) => {
+        expect(
+          getPendingRevocationState({
+            pendingRequest,
+            isRevoked: true,
+            isRevocationApprovalRequired
+          })
+        ).toEqual({
+          isPending: false,
+          revokeBlockedReason: undefined,
+          revokeReplacesRequestReason: undefined
+        });
+      });
+    });
+  });
+
+  it("does nothing without a pending request", () => {
+    expect(
+      getPendingRevocationState({
+        isRevoked: false,
+        isRevocationApprovalRequired: true
+      })
+    ).toEqual({
+      isPending: false,
+      revokeBlockedReason: undefined,
+      revokeReplacesRequestReason: undefined
+    });
+  });
+});
 
 const future = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
 const past = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
@@ -153,5 +401,20 @@ describe("getCertificateDeletedBySummary", () => {
     expect(getCertificateDeletedBySummary({ deletedByActorType: ActorType.PLATFORM })).toBe(
       "Certificate cleanup"
     );
+  });
+});
+
+describe("canRenewOnExistingKeyPair", () => {
+  it("allows a certificate whose private key Infisical holds", () => {
+    expect(canRenewOnExistingKeyPair({ hasPrivateKey: true })).toBe(true);
+  });
+
+  it("allows a certificate without its private key when it can renew from a stored CSR", () => {
+    expect(canRenewOnExistingKeyPair({ hasPrivateKey: false, canRenewFromCsr: true })).toBe(true);
+  });
+
+  it("refuses a certificate without its private key that can't renew from a CSR", () => {
+    expect(canRenewOnExistingKeyPair({ hasPrivateKey: false, canRenewFromCsr: false })).toBe(false);
+    expect(canRenewOnExistingKeyPair({ hasPrivateKey: false })).toBe(false);
   });
 });

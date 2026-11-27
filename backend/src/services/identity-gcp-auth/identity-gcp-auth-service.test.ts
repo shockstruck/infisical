@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { IdentityAuthMethod } from "@app/db/schemas";
+import { FakeInstanceConfigService } from "@app/domains/platform/instance-config-core/ce/testing/fake-instance-config-service";
+import { FakeLicenseService } from "@app/domains/platform/license/ce/testing/fake-license-service";
 import { logger } from "@app/lib/logger";
 
 import { identityGcpAuthServiceFactory } from "./identity-gcp-auth-service";
@@ -17,7 +19,8 @@ vi.mock("./identity-gcp-auth-fns", async (importOriginal) => ({
   validateIdTokenIdentity
 }));
 
-vi.mock("@app/lib/config/env", () => ({
+vi.mock("@app/lib/config/env", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   getConfig: () => ({ OTEL_TELEMETRY_COLLECTION_ENABLED: false })
 }));
 
@@ -90,7 +93,8 @@ const makeService = (gcpAuth: Partial<TGcpAuthRow> = {}, authMethods: string[] =
     keyStore: { setItemWithExpiryNX: vi.fn().mockResolvedValue(null) } as never,
     identityAccessTokenDAL: {} as never,
     permissionService: {} as never,
-    licenseService: {} as never,
+    licenseService: new FakeLicenseService(),
+    instanceConfigService: new FakeInstanceConfigService(),
     identityAccessTokenService: { issueIdentityAccessToken } as never,
     eventEmitter: { emit: vi.fn() } as never
   });

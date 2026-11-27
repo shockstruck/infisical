@@ -2,11 +2,13 @@ import { createMongoAbility, ForbiddenError, MongoAbility, MongoQuery, RawRuleOf
 import { packRules } from "@casl/ability/extra";
 
 import { RESOURCE_SCOPE, ResourceType, TPamAccountTemplates } from "@app/db/schemas";
+import { TInstanceConfigService } from "@app/domains/platform/instance-config-core/ce/module";
+import { KmsDataKey, TKmsDataKeyService } from "@app/domains/platform/kms-core/ce/module";
+import { PlanLimit, PlanProduct, TLicenseService } from "@app/domains/platform/license/ce/module";
 import { TGatewayPoolMembershipDALFactory } from "@app/ee/services/gateway-pool/gateway-pool-membership-dal";
 import { TGatewayPoolServiceFactory } from "@app/ee/services/gateway-pool/gateway-pool-service";
 import { TGatewayV2DALFactory } from "@app/ee/services/gateway-v2/gateway-v2-dal";
 import { TGatewayV2ServiceFactory } from "@app/ee/services/gateway-v2/gateway-v2-service";
-import { TLicenseServiceFactory } from "@app/ee/services/license/license-service";
 import { TPermissionServiceFactory } from "@app/ee/services/permission/permission-service-types";
 import {
   ResourcePermissionPamResourceActions,
@@ -22,13 +24,12 @@ import { createSshKeyPair, SshCertKeyAlgorithm } from "@app/lib/ssh";
 import { TAppConnectionDALFactory } from "@app/services/app-connection/app-connection-dal";
 import { ApprovalAccessStatus } from "@app/services/approval-policy/approval-policy-types";
 import { ActorType } from "@app/services/auth/auth-type";
-import { TKmsServiceFactory } from "@app/services/kms/kms-service";
-import { KmsDataKey } from "@app/services/kms/kms-types";
 import { TMembershipDALFactory } from "@app/services/membership/membership-dal";
 import { TMembershipRoleDALFactory } from "@app/services/membership/membership-role-dal";
 import { TMfaSessionServiceFactory } from "@app/services/mfa-session/mfa-session-service";
 import { TOrgDALFactory } from "@app/services/org/org-dal";
 import { TUserDALFactory } from "@app/services/user/user-dal";
+import { TUserServiceFactory } from "@app/services/user/user-service";
 
 import { testBuiltConnectionWithGateway } from "../gateway-v2/gateway-v2-fns";
 import { TPamAccessRequestServiceFactory } from "../pam-access-request/pam-access-request-service";
@@ -116,7 +117,8 @@ type TPamAccountServiceFactoryDep = {
   pamSessionDAL: Pick<TPamSessionDALFactory, "find" | "update">;
   pamDiscoverySourceDAL: Pick<TPamDiscoverySourceDALFactory, "find">;
   userDAL: Pick<TUserDALFactory, "findById">;
-  orgDAL: Pick<TOrgDALFactory, "findOrgById" | "findById">;
+  userService: Pick<TUserServiceFactory, "getEnrolledMfaMethods">;
+  orgDAL: Pick<TOrgDALFactory, "findById" | "findRootOrgDetails">;
   mfaSessionService: Pick<
     TMfaSessionServiceFactory,
     "createMfaSession" | "getMfaSession" | "deleteMfaSession" | "sendMfaCode"
@@ -125,7 +127,8 @@ type TPamAccountServiceFactoryDep = {
     TPermissionServiceFactory,
     "getProjectPermission" | "getResourcePermission" | "getOrgPermission"
   >;
-  kmsService: Pick<TKmsServiceFactory, "createCipherPairWithDataKey">;
+  kmsDataKeyService: TKmsDataKeyService;
+  instanceConfigService: TInstanceConfigService;
   gatewayV2DAL: Pick<TGatewayV2DALFactory, "findOne" | "find">;
   gatewayPoolMembershipDAL: Pick<TGatewayPoolMembershipDALFactory, "findHealthyGatewaysByPoolId">;
   gatewayV2Service: Pick<
@@ -134,7 +137,7 @@ type TPamAccountServiceFactoryDep = {
   >;
   gatewayPoolService: Pick<
     TGatewayPoolServiceFactory,
-    "resolveAttachableGatewayFromPool" | "resolveEffectiveGatewayId"
+    "resolveAttachableGatewayFromPool" | "resolveEffectiveGatewayId" | "assertGatewayBindingInOrg"
   >;
   appConnectionDAL: Pick<TAppConnectionDALFactory, "findOne" | "findById">;
   pamAccessRequestService: Pick<
@@ -145,7 +148,7 @@ type TPamAccountServiceFactoryDep = {
     | "cleanupAccountResources"
     | "checkGrant"
   >;
-  licenseService: Pick<TLicenseServiceFactory, "getPlan">;
+  licenseService: TLicenseService;
 };
 
 const assertOraclePasswordIsUsable = (accountType: PamAccountType, credentials: unknown) => {
@@ -213,17 +216,19 @@ export const pamAccountServiceFactory = (deps: TPamAccountServiceFactoryDep) => 
     userDAL,
     orgDAL,
     mfaSessionService,
+    userService,
     permissionService,
-    kmsService,
+    kmsDataKeyService,
     gatewayV2Service,
     gatewayPoolService,
     gatewayPoolMembershipDAL,
     gatewayV2DAL,
-    licenseService
+    licenseService,
+    instanceConfigService
   } = deps;
 
   const getProjectCipher = async (projectId: string) =>
-    kmsService.createCipherPairWithDataKey({ type: KmsDataKey.SecretManager, projectId });
+    kmsDataKeyService.createCipherPairWithDataKey({ type: KmsDataKey.SecretManager, projectId });
 
   const encrypt = async (projectId: string, data: Record<string, unknown>) => {
     const { encryptor } = await getProjectCipher(projectId);
@@ -325,6 +330,7 @@ export const pamAccountServiceFactory = (deps: TPamAccountServiceFactoryDep) => 
     templateId,
     accountType,
     search,
+    filterByAction,
     ...ctx
   }: TListPamAccountsDTO & TActorContext) => {
     await verifyMembership(projectId, ctx);
@@ -333,7 +339,7 @@ export const pamAccountServiceFactory = (deps: TPamAccountServiceFactoryDep) => 
       membershipDAL,
       membershipRoleDAL,
       projectId,
-      { allOf: [ResourcePermissionPamResourceActions.ReadAccounts] },
+      { allOf: [ResourcePermissionPamResourceActions.ReadAccounts, ...(filterByAction ? [filterByAction] : [])] },
       ctx
     );
     if (folderIds.length === 0 && accountIds.length === 0) return [];
@@ -581,7 +587,7 @@ export const pamAccountServiceFactory = (deps: TPamAccountServiceFactoryDep) => 
         });
       }
       await enforceMfa(
-        { mfaSessionService, orgDAL, userDAL },
+        { mfaSessionService, orgDAL, userDAL, userService },
         {
           userId: ctx.actorId,
           orgId: ctx.actorOrgId,
@@ -629,7 +635,7 @@ export const pamAccountServiceFactory = (deps: TPamAccountServiceFactoryDep) => 
     const validateCloud = CLOUD_CONNECTION_VALIDATORS[accountType];
     if (validateCloud) {
       try {
-        await validateCloud({ connectionDetails, credentials, orgId });
+        await validateCloud({ connectionDetails, credentials, orgId, instanceConfigService });
       } catch (err) {
         throw new BadRequestError({
           message: `Connection test failed: ${err instanceof Error ? err.message : "unable to validate credentials"}`
@@ -637,6 +643,12 @@ export const pamAccountServiceFactory = (deps: TPamAccountServiceFactoryDep) => 
       }
       return true;
     }
+
+    await gatewayPoolService.assertGatewayBindingInOrg({
+      gatewayId: gateway.gatewayId ?? gateway.templateGatewayId,
+      gatewayPoolId: gateway.gatewayPoolId ?? gateway.templateGatewayPoolId,
+      orgId
+    });
 
     const effectiveGatewayId = gateway.gatewayId ?? gateway.templateGatewayId;
     const gatewayId = await gatewayPoolService.resolveEffectiveGatewayId({
@@ -702,7 +714,7 @@ export const pamAccountServiceFactory = (deps: TPamAccountServiceFactoryDep) => 
     );
 
     const plan = await licenseService.getPlan(ctx.actorOrgId);
-    if (typeof plan.pam === "boolean" && !plan.pam) {
+    if (!plan.allows(PlanProduct.Pam)) {
       throw new BadRequestError({
         message: "PAM is not available on your current plan. Please upgrade to continue."
       });
@@ -710,19 +722,16 @@ export const pamAccountServiceFactory = (deps: TPamAccountServiceFactoryDep) => 
 
     if (
       (accountType === PamAccountType.Windows || accountType === PamAccountType.WindowsAd) &&
-      typeof plan.enterprisePamAccount === "boolean" &&
-      !plan.enterprisePamAccount
+      !plan.allows(PlanProduct.PamEnterpriseAccounts)
     ) {
       throw new BadRequestError({
         message: "Windows PAM accounts are not available on your current plan. Please upgrade to continue."
       });
     }
 
-    // maxPamAccounts is uncapped by default (null); only enforce a cap when the plan configures a numeric
-    // limit. Counted org-wide right before creation.
-    if (typeof plan.maxPamAccounts === "number") {
+    if (plan.isLimited(PlanLimit.PamAccounts)) {
       const currentPamAccountCount = await pamAccountDAL.countByOrgId(ctx.actorOrgId);
-      if (currentPamAccountCount >= plan.maxPamAccounts) {
+      if (plan.exceeds(PlanLimit.PamAccounts, currentPamAccountCount)) {
         throw new BadRequestError({
           name: "PAM_ACCOUNT_LIMIT_REACHED",
           message: "Failed to create PAM account due to plan limit reached. Upgrade plan to add more PAM accounts."
@@ -749,7 +758,7 @@ export const pamAccountServiceFactory = (deps: TPamAccountServiceFactoryDep) => 
     await validateGatewayAttachment(
       deps,
       effectiveGatewayId,
-      effectiveGatewayId ? null : (gatewayPoolId ?? template.gatewayPoolId),
+      gatewayPoolId ?? (effectiveGatewayId ? null : template.gatewayPoolId),
       ctx,
       { inheritedFrom: gatewayId ? undefined : `Account template '${template.name}'` }
     );
@@ -940,7 +949,7 @@ export const pamAccountServiceFactory = (deps: TPamAccountServiceFactoryDep) => 
       await validateGatewayAttachment(
         deps,
         effectiveGatewayId,
-        effectiveGatewayId ? null : (nextGatewayPoolId ?? nextTemplateGatewayPoolId),
+        gatewayPoolId ?? (effectiveGatewayId ? null : (nextGatewayPoolId ?? nextTemplateGatewayPoolId)),
         ctx,
         {
           previousGatewayId: existing.gatewayId ?? existing.templateGatewayId,

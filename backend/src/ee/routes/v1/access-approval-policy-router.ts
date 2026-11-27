@@ -92,6 +92,7 @@ export const registerAccessApprovalPolicyRouter = async (server: FastifyZodProvi
             .string()
             .trim()
             .min(1, { message: "Secret path cannot be empty" })
+            .max(1024)
             .transform(removeTrailingSlash),
           environment: z.string().optional(),
           environments: z.string().array().optional(),
@@ -165,7 +166,7 @@ export const registerAccessApprovalPolicyRouter = async (server: FastifyZodProvi
     },
     onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
     handler: async (req) => {
-      const approval = await server.services.secretAccessApprovalGlobalPolicyBridge.createAccessApprovalPolicy({
+      const approval = await server.services.secretAccessApprovalPolicy.createAccessApprovalPolicy({
         actor: req.permission.type,
         actorId: req.permission.id,
         actorAuthMethod: req.permission.authMethod,
@@ -238,7 +239,7 @@ export const registerAccessApprovalPolicyRouter = async (server: FastifyZodProvi
     },
     onRequest: verifyAuth([AuthMode.JWT, AuthMode.OAUTH]),
     handler: async (req) => {
-      const approvals = await server.services.accessApprovalPolicy.getAccessApprovalPolicyByProjectSlug({
+      const approvals = await server.services.secretAccessApprovalPolicy.getAccessApprovalPolicyByProjectSlug({
         actor: req.permission.type,
         actorId: req.permission.id,
         actorAuthMethod: req.permission.authMethod,
@@ -268,7 +269,7 @@ export const registerAccessApprovalPolicyRouter = async (server: FastifyZodProvi
 
     onRequest: verifyAuth([AuthMode.JWT, AuthMode.OAUTH]),
     handler: async (req) => {
-      const { count } = await server.services.accessApprovalPolicy.getAccessPolicyCountByEnvSlug({
+      const { count } = await server.services.secretAccessApprovalPolicy.getAccessPolicyCountByEnvSlug({
         actor: req.permission.type,
         actorId: req.permission.id,
         actorAuthMethod: req.permission.authMethod,
@@ -297,6 +298,7 @@ export const registerAccessApprovalPolicyRouter = async (server: FastifyZodProvi
           .string()
           .trim()
           .min(1, { message: "Secret path cannot be empty" })
+          .max(1024)
           .optional()
           .transform((val) => (val ? removeTrailingSlash(val) : val)),
         approvers: z
@@ -362,7 +364,7 @@ export const registerAccessApprovalPolicyRouter = async (server: FastifyZodProvi
     },
     onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
     handler: async (req) => {
-      const approval = await server.services.accessApprovalPolicy.updateAccessApprovalPolicy({
+      const approval = await server.services.secretAccessApprovalPolicy.updateAccessApprovalPolicy({
         policyId: req.params.policyId,
         actor: req.permission.type,
         actorOrgId: req.permission.orgId,
@@ -405,7 +407,7 @@ export const registerAccessApprovalPolicyRouter = async (server: FastifyZodProvi
     },
     onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN]),
     handler: async (req) => {
-      const approval = await server.services.accessApprovalPolicy.deleteAccessApprovalPolicy({
+      const approval = await server.services.secretAccessApprovalPolicy.deleteAccessApprovalPolicy({
         actor: req.permission.type,
         actorId: req.permission.id,
         actorAuthMethod: req.permission.authMethod,
@@ -472,7 +474,7 @@ export const registerAccessApprovalPolicyRouter = async (server: FastifyZodProvi
     },
     onRequest: verifyAuth([AuthMode.JWT, AuthMode.IDENTITY_ACCESS_TOKEN, AuthMode.OAUTH]),
     handler: async (req) => {
-      const approval = await server.services.accessApprovalPolicy.getAccessApprovalPolicyById({
+      const approval = await server.services.secretAccessApprovalPolicy.getAccessApprovalPolicyById({
         actor: req.permission.type,
         actorId: req.permission.id,
         actorAuthMethod: req.permission.authMethod,

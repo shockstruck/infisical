@@ -10,7 +10,7 @@ export enum SubscriptionPlanTypes {
   OnPremEnterprise = "one-prem-enterprise"
 }
 
-export type SubscriptionPlanNotice = {
+export type TrialPaymentFailedNotice = {
   type: "trial_payment_failed";
   productKey: string;
   trialPlanKey: string | null;
@@ -18,6 +18,14 @@ export type SubscriptionPlanNotice = {
   nextAttemptAt: string | null;
   cause: string | null;
 };
+
+export type SubscriptionPaymentFailedNotice = {
+  type: "subscription_payment_failed";
+  cause: string | null;
+  since: string | null;
+};
+
+export type SubscriptionPlanNotice = TrialPaymentFailedNotice | SubscriptionPaymentFailedNotice;
 
 export type SubscriptionPlan = {
   productPlans?: {
@@ -81,12 +89,14 @@ export type SubscriptionPlan = {
   pkiAcme: boolean;
   pkiEst: boolean;
   pkiScep: boolean;
+  pkiMicrosoftAutoenrollment: boolean;
   pkiPqc: boolean;
   caCrl: boolean;
   pkiOcsp: boolean;
   pkiAwsKmsSigning: boolean;
   pkiEnterpriseCaIntegrations: boolean;
   pkiExternalIntermediateCa: boolean;
+  pkiCrossSignedCa: boolean;
   pkiDiscovery: boolean;
   pkiEnterpriseAlerting: boolean;
   pkiApprovals: boolean;
@@ -108,9 +118,6 @@ export type SubscriptionPlan = {
   secretScanning: boolean;
   enterpriseSecretSyncs: boolean;
   enterpriseAppConnections: boolean;
-  cardDeclined?: boolean;
-  cardDeclinedReason?: string;
-  cardDeclinedDays?: number;
   machineIdentityAuthTemplates: boolean;
   secretShareExternalBranding: boolean;
   emailDomainVerification: boolean;
@@ -119,9 +126,11 @@ export type SubscriptionPlan = {
   secretsBrokering: boolean;
   agentVaultByoS3: boolean;
   agentVaultManagedStorage: boolean;
+  agentVaultHooks: boolean;
   // null means 30 days.
   agentVaultSessionLogRetentionDays: number | null;
   pam?: boolean | null;
+  agentVault?: boolean | null;
   enterprisePamAccount?: boolean | null;
   maxPamAccounts?: number | null;
   certManager?: boolean | null;

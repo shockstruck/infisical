@@ -2,6 +2,8 @@ import { ForbiddenError } from "@casl/ability";
 import { requestContext } from "@fastify/request-context";
 
 import { ActionProjectType, OrganizationActionScope, TUsers } from "@app/db/schemas";
+import { TInstanceConfigService } from "@app/domains/platform/instance-config-core/ce/module";
+import { PlanFeature, TLicenseService } from "@app/domains/platform/license/ce/module";
 import { KeyStorePrefixes, KeyStoreTtls, TKeyStoreFactory } from "@app/keystore/keystore";
 import { getConfig } from "@app/lib/config/env";
 import { generateCacheKeyFromData } from "@app/lib/crypto/cache";
@@ -17,7 +19,6 @@ import { NotificationType } from "@app/services/notification/notification-types"
 import { SmtpTemplates, TSmtpService } from "@app/services/smtp/smtp-service";
 import { TUserDALFactory } from "@app/services/user/user-dal";
 
-import { TLicenseServiceFactory } from "../license/license-service";
 import { OrgPermissionAuditLogsActions, OrgPermissionSubjects } from "../permission/org-permission";
 import { TPermissionServiceFactory } from "../permission/permission-service-types";
 import { ProjectPermissionAuditLogsActions, ProjectPermissionSub } from "../permission/project-permission";
@@ -47,11 +48,12 @@ const COLLAPSE_FLUSH_BACKOFF_MS = 3_000;
 
 type TAuditLogServiceFactoryDep = {
   auditLogDAL: TAuditLogDALFactory;
+  instanceConfigService: TInstanceConfigService;
   clickhouseAuditLogDAL?: TClickHouseAuditLogDALFactory;
   permissionService: Pick<TPermissionServiceFactory, "getProjectPermission" | "getOrgPermission">;
   auditLogQueue: TAuditLogQueueServiceFactory;
   auditLogSettingsService: Pick<TAuditLogSettingsServiceFactory, "getEffectiveSettings">;
-  licenseService: Pick<TLicenseServiceFactory, "getPlan">;
+  licenseService: TLicenseService;
   queueService: Pick<TQueueServiceFactory, "queue" | "start">;
   keyStore: Pick<
     TKeyStoreFactory,
@@ -71,6 +73,7 @@ type TAuditLogServiceFactoryDep = {
 
 export const auditLogServiceFactory = ({
   auditLogDAL,
+  instanceConfigService,
   clickhouseAuditLogDAL,
   auditLogQueue,
   auditLogSettingsService,
@@ -134,6 +137,13 @@ export const auditLogServiceFactory = ({
         OrgPermissionAuditLogsActions.Read,
         OrgPermissionSubjects.AuditLogs
       );
+    }
+
+    const plan = await licenseService.getPlan(actorOrgId);
+    if (!plan.has(PlanFeature.AuditLogs)) {
+      throw new BadRequestError({
+        message: "Failed to list audit logs due to plan restriction. Upgrade your plan to view audit logs."
+      });
     }
 
     if (filter.auditLogActorId && filter.actorType && !ACTOR_TYPE_TO_METADATA_ID_KEY[filter.actorType]) {
@@ -356,7 +366,8 @@ export const auditLogServiceFactory = ({
     const appCfg = getConfig();
     const clickHouseConfigured = Boolean(appCfg.isClickHouseConfigured && appCfg.CLICKHOUSE_AUDIT_LOG_ENABLED);
     const auditLogGenerationDisabled = Boolean(appCfg.DISABLE_AUDIT_LOG_GENERATION);
-    const postgresAuditLogStorageDisabled = Boolean(appCfg.DISABLE_POSTGRES_AUDIT_LOG_STORAGE);
+    const { DISABLE_POSTGRES_AUDIT_LOG_STORAGE } = await instanceConfigService.getOverridableEnv();
+    const postgresAuditLogStorageDisabled = Boolean(DISABLE_POSTGRES_AUDIT_LOG_STORAGE);
     const auditLogRowCount = await auditLogDAL.getApproximateRowCount();
 
     return {
@@ -369,12 +380,13 @@ export const auditLogServiceFactory = ({
 
   const checkPostgresAuditLogVolumeMigrationAlert = async () => {
     const appCfg = getConfig();
+    const { DISABLE_POSTGRES_AUDIT_LOG_STORAGE } = await instanceConfigService.getOverridableEnv();
     const isClickHouseConfigured = appCfg.isClickHouseConfigured && appCfg.CLICKHOUSE_AUDIT_LOG_ENABLED;
     if (
       isClickHouseConfigured ||
       appCfg.isCloud ||
       appCfg.DISABLE_AUDIT_LOG_GENERATION ||
-      appCfg.DISABLE_POSTGRES_AUDIT_LOG_STORAGE
+      DISABLE_POSTGRES_AUDIT_LOG_STORAGE
     )
       return;
 

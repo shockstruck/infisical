@@ -1,6 +1,11 @@
 import { ProjectType } from "@app/db/schemas";
 import { GatewayTransport } from "@app/ee/services/gateway-v2/gateway-v2-constants";
-import { HoneyTokenType } from "@app/ee/services/honey-token/honey-token-enums";
+import { HoneyTokenManagedBy, HoneyTokenType } from "@app/ee/services/honey-token/honey-token-enums";
+import {
+  MicrosoftAutoenrollmentFailureReason,
+  MicrosoftAutoenrollmentIssuanceResult,
+  MicrosoftAutoenrollmentKeytabSource
+} from "@app/ee/services/microsoft-autoenrollment/microsoft-autoenrollment-types";
 import { CertificateSource, PkiKeystorePasswordChange } from "@app/ee/services/pki-discovery/pki-discovery-types";
 import { ScepChallengeType } from "@app/ee/services/pki-scep/challenge";
 import { ScepEnrollmentStatus } from "@app/ee/services/pki-scep/pki-scep-types";
@@ -34,19 +39,25 @@ import {
 import { SymmetricKeyAlgorithm } from "@app/lib/crypto/cipher";
 import { HmacAlgorithm } from "@app/lib/crypto/hmac";
 import { AsymmetricKeyAlgorithm, SigningAlgorithm } from "@app/lib/crypto/sign/types";
+import { KerberosFailureReason } from "@app/lib/kerberos";
 import { TOrgPermission, TProjectPermission } from "@app/lib/types";
 import { AppConnection } from "@app/services/app-connection/app-connection-enums";
 import { TCreateAppConnectionDTO, TUpdateAppConnectionDTO } from "@app/services/app-connection/app-connection-types";
 import { TApprovalRequestSubjectMetadata } from "@app/services/approval-policy/approval-policy-types";
 import { ActorType } from "@app/services/auth/auth-type";
 import { TIdpMfaSignal } from "@app/services/auth/idp-mfa-signal";
-import { CaStatus } from "@app/services/certificate-authority/certificate-authority-enums";
+import { CaCrlRegenerationTrigger, CaStatus } from "@app/services/certificate-authority/certificate-authority-enums";
 import { CertificateIssuanceOperation } from "@app/services/certificate-common/certificate-constants";
 import { EnrollmentType } from "@app/services/certificate-profile/certificate-profile-types";
 import { CertificateRequestStatus } from "@app/services/certificate-request/certificate-request-types";
-import { CertificateRenewalKeySource, TRenewalAuditChange } from "@app/services/certificate-v3/certificate-v3-types";
+import {
+  CertificateRenewalKeySource,
+  TRenewalAuditChange,
+  TRenewCertificateDTO
+} from "@app/services/certificate-v3/certificate-v3-types";
 import {
   CertExtendedKeyUsage,
+  CertificateRevocationSource,
   CertKeyAlgorithm,
   CertKeyUsage,
   CertStatus,
@@ -81,7 +92,7 @@ import { WorkflowIntegration } from "@app/services/workflow-integration/workflow
 
 import { KmipPermission } from "../kmip/kmip-enum";
 import { AcmeChallengeType, AcmeIdentifierType } from "../pki-acme/pki-acme-schemas";
-import { ApprovalStatus } from "../secret-approval-request/secret-approval-request-types";
+import { ApprovalStatus } from "../secret-change-request/secret-change-request-types";
 import type { AuditLogEventClass } from "./audit-log-event-classes";
 
 export type TListProjectAuditLogDTO = {
@@ -117,6 +128,7 @@ export type TCreateAuditLogDTO = {
     | AcmeAccountActor
     | EstAccountActor
     | ScepAccountActor
+    | MicrosoftAutoenrollmentAccountActor
     | GatewayActor
     | RelayActor
     | KmipServerActor
@@ -432,7 +444,10 @@ export enum EventType {
   GET_CA_CERT = "get-certificate-authority-cert",
   SIGN_INTERMEDIATE = "sign-intermediate",
   IMPORT_CA_CERT = "import-certificate-authority-cert",
+  IMPORT_CA_CROSS_SIGNED_CERT = "import-ca-cross-signed-cert",
+  DELETE_CA_CROSS_SIGNED_CERT = "delete-ca-cross-signed-cert",
   GET_CA_CRLS = "get-certificate-authority-crls",
+  REGENERATE_CA_CRL = "regenerate-certificate-authority-crl",
   GENERATE_CA_CERTIFICATE = "generate-ca-certificate",
   INSTALL_CA_CERT_VENAFI = "install-ca-cert-venafi",
   INSTALL_CA_CERT_ADCS = "install-ca-cert-adcs",
@@ -448,6 +463,8 @@ export enum EventType {
   GET_CERT = "get-cert",
   DELETE_CERT = "delete-cert",
   REVOKE_CERT = "revoke-cert",
+  REQUEST_CERT_REVOCATION = "request-cert-revocation",
+  CERT_REVOCATION_FAILED = "cert-revocation-failed",
   ASSIGN_CERT_TO_APPLICATION = "assign-cert-to-application",
   GET_CERT_BODY = "get-cert-body",
   GET_CERT_PRIVATE_KEY = "get-cert-private-key",
@@ -527,6 +544,9 @@ export enum EventType {
   ROTATE_PKI_APPLICATION_ACME_EAB_SECRET = "rotate-pki-application-acme-eab-secret",
   SET_PKI_APPLICATION_SCEP_ENROLLMENT = "set-pki-application-scep-enrollment",
   CLEAR_PKI_APPLICATION_SCEP_ENROLLMENT = "clear-pki-application-scep-enrollment",
+  SET_PKI_APPLICATION_MICROSOFT_AUTOENROLLMENT_ENROLLMENT = "set-pki-application-microsoft-autoenrollment-enrollment",
+  CLEAR_PKI_APPLICATION_MICROSOFT_AUTOENROLLMENT_ENROLLMENT = "clear-pki-application-microsoft-autoenrollment-enrollment",
+  REENROLL_PKI_APPLICATION_MICROSOFT_AUTOENROLLMENT_COMPUTERS = "reenroll-pki-application-microsoft-autoenrollment-computers",
   GET_CERT_MANAGER_INSTANCE_STATE = "get-cert-manager-instance-state",
   SET_CERT_MANAGER_ACTIVE_PROJECT = "set-cert-manager-active-project",
   INVITE_CERT_MANAGER_USERS = "invite-cert-manager-users",
@@ -720,11 +740,13 @@ export enum EventType {
   SECRET_SCANNING_RESOURCE_REMOVE = "secret-scanning-resource-remove",
   SECRET_SCANNING_SCAN_LIST = "secret-scanning-scan-list",
   SECRET_SCANNING_FINDING_LIST = "secret-scanning-finding-list",
+  SECRET_SCANNING_FINDING_LOCATION_LIST = "secret-scanning-finding-location-list",
   SECRET_SCANNING_FINDING_UPDATE = "secret-scanning-finding-update",
   SECRET_SCANNING_CONFIG_GET = "secret-scanning-config-get",
   SECRET_SCANNING_CONFIG_UPDATE = "secret-scanning-config-update",
 
   UPDATE_ORG = "update-org",
+  UPDATE_ORG_AI_CONFIG = "update-org-ai-config",
   ENABLE_ORG_WIDE_SECRET_VALUE_TRACKING = "enable-org-wide-secret-value-tracking",
 
   CREATE_PROJECT = "create-project",
@@ -830,6 +852,7 @@ export enum EventType {
   AGENT_VAULT_VARIABLE_UPDATE = "agent-vault-variable-update",
   AGENT_VAULT_VARIABLE_DELETE = "agent-vault-variable-delete",
   AGENT_VAULT_VARIABLE_VALUE_VIEW = "agent-vault-variable-value-view",
+  AGENT_VAULT_OAUTH_VARIABLE_CONNECT = "agent-vault-oauth-variable-connect",
   AGENT_VAULT_PERSONAL_VALUES_SET = "agent-vault-personal-values-set",
   AGENT_VAULT_PERSONAL_VALUES_DELETE = "agent-vault-personal-values-delete",
   AGENT_VAULT_SKILL_CREATE = "agent-vault-skill-create",
@@ -838,8 +861,13 @@ export enum EventType {
   AGENT_VAULT_SKILL_VERSION_RESTORE = "agent-vault-skill-version-restore",
   AGENT_VAULT_SKILL_VERSION_VIEW = "agent-vault-skill-version-view",
   AGENT_VAULT_SKILL_DELETE = "agent-vault-skill-delete",
+  AGENT_VAULT_HOOK_CREATE = "agent-vault-hook-create",
+  AGENT_VAULT_HOOK_UPDATE = "agent-vault-hook-update",
+  AGENT_VAULT_HOOK_DELETE = "agent-vault-hook-delete",
   AGENT_VAULT_ACCESS_BUNDLE_SKILL_ADD = "agent-vault-access-bundle-skill-add",
   AGENT_VAULT_ACCESS_BUNDLE_SKILL_REMOVE = "agent-vault-access-bundle-skill-remove",
+  AGENT_VAULT_ACCESS_BUNDLE_SERVICE_ADD = "agent-vault-access-bundle-service-add",
+  AGENT_VAULT_ACCESS_BUNDLE_SERVICE_REMOVE = "agent-vault-access-bundle-service-remove",
   AGENT_VAULT_SKILLS_DELIVERED = "agent-vault-skills-delivered",
   AGENT_VAULT_MEMBER_ADD = "agent-vault-member-add",
   AGENT_VAULT_MEMBER_UPDATE = "agent-vault-member-update",
@@ -941,6 +969,10 @@ export enum EventType {
   ENABLE_PKI_SIGNER = "enable-pki-signer",
   DISABLE_PKI_SIGNER = "disable-pki-signer",
   REISSUE_PKI_SIGNER_CERTIFICATE = "reissue-pki-signer-certificate",
+  RENEW_PKI_SIGNER_CERTIFICATE = "renew-pki-signer-certificate",
+  REVOKE_PKI_SIGNER_CERTIFICATE = "revoke-pki-signer-certificate",
+  PKI_SIGNER_CERTIFICATE_REVOCATION_DECIDED = "pki-signer-certificate-revocation-decided",
+  PKI_SIGNER_CERTIFICATE_REVOKED_BY_CA = "pki-signer-certificate-revoked-by-ca",
   IMPORT_PKI_SIGNER_CERTIFICATE = "import-pki-signer-certificate",
   EXPORT_PKI_SIGNER_CERTIFICATE = "export-pki-signer-certificate",
   UPDATE_PKI_SIGNER_APPROVAL_POLICY = "update-pki-signer-approval-policy",
@@ -953,6 +985,9 @@ export enum EventType {
   SCEP_ENROLLMENT = "scep-enrollment",
   SCEP_RENEWAL = "scep-renewal",
   SCEP_DYNAMIC_CHALLENGE_GENERATED = "scep-dynamic-challenge-generated",
+  MICROSOFT_AUTOENROLLMENT_ISSUANCE = "microsoft-autoenrollment-issuance",
+  MICROSOFT_AUTOENROLLMENT_RENEWAL = "microsoft-autoenrollment-renewal",
+  MICROSOFT_AUTOENROLLMENT_REQUEST_REFUSED = "microsoft-autoenrollment-request-refused",
 
   // Secret Validation Rules
   SECRET_VALIDATION_RULE_CREATE = "secret-validation-rule-create",
@@ -1033,6 +1068,11 @@ export enum EventType {
   DELETE_ALERT = "delete-alert",
   TEST_ALERT_CHANNEL = "test-alert-channel",
 
+  // Audit log streams
+  CREATE_AUDIT_LOG_STREAM = "create-audit-log-stream",
+  UPDATE_AUDIT_LOG_STREAM = "update-audit-log-stream",
+  DELETE_AUDIT_LOG_STREAM = "delete-audit-log-stream",
+
   // Authorization
   PERMISSION_DENIED = "permission-denied",
 
@@ -1053,6 +1093,7 @@ export const ACTOR_TYPE_TO_METADATA_ID_KEY: Partial<Record<ActorType, string>> =
   [ActorType.ACME_ACCOUNT]: "accountId",
   [ActorType.EST_ACCOUNT]: "profileId",
   [ActorType.SCEP_ACCOUNT]: "profileId",
+  [ActorType.MICROSOFT_AUTOENROLLMENT_ACCOUNT]: "profileId",
   [ActorType.GATEWAY]: "gatewayId",
   [ActorType.RELAY]: "relayId",
   [ActorType.KMIP_SERVER]: "kmipServerId",
@@ -1117,6 +1158,10 @@ interface EstAccountActorMetadata {
 }
 
 interface ScepAccountActorMetadata {
+  profileId: string;
+}
+
+interface MicrosoftAutoenrollmentAccountActorMetadata {
   profileId: string;
 }
 
@@ -1192,6 +1237,11 @@ export interface ScepAccountActor {
   metadata: ScepAccountActorMetadata;
 }
 
+export interface MicrosoftAutoenrollmentAccountActor {
+  type: ActorType.MICROSOFT_AUTOENROLLMENT_ACCOUNT;
+  metadata: MicrosoftAutoenrollmentAccountActorMetadata;
+}
+
 export interface GatewayActor {
   type: ActorType.GATEWAY;
   metadata: GatewayActorMetadata;
@@ -1223,6 +1273,18 @@ export type Actor =
   | AcmeAccountActor
   | EstAccountActor
   | ScepAccountActor
+  | MicrosoftAutoenrollmentAccountActor
+  | GatewayActor
+  | RelayActor
+  | KmipServerActor
+  | AgentVaultProxyActor;
+
+export type RequestActor =
+  | UserActor
+  | ServiceActor
+  | IdentityActor
+  | ScimClientActor
+  | UnknownUserActor
   | GatewayActor
   | RelayActor
   | KmipServerActor
@@ -3092,6 +3154,7 @@ interface CreateCa {
     name: string;
     dn?: string;
     isOcspEnabled?: boolean;
+    crlValidityDays?: number;
   };
 }
 
@@ -3119,6 +3182,7 @@ interface UpdateCa {
     dn?: string;
     status: CaStatus;
     isOcspEnabled?: boolean;
+    crlValidityDays?: number;
   };
 }
 
@@ -3159,6 +3223,7 @@ interface GetCaCsr {
   metadata: {
     caId: string;
     dn: string;
+    maxPathLength?: number;
   };
 }
 
@@ -3195,11 +3260,47 @@ interface ImportCaCert {
   };
 }
 
+interface ImportCaCrossSignedCert {
+  type: EventType.IMPORT_CA_CROSS_SIGNED_CERT;
+  metadata: {
+    caId: string;
+    caName: string;
+    issuer: string;
+    serialNumber: string;
+    notAfter: string;
+    replacedSerialNumber?: string;
+  };
+}
+
+interface DeleteCaCrossSignedCert {
+  type: EventType.DELETE_CA_CROSS_SIGNED_CERT;
+  metadata: {
+    caId: string;
+    caName: string;
+    issuer: string;
+    serialNumber: string;
+    notAfter: string;
+  };
+}
+
 interface GetCaCrls {
   type: EventType.GET_CA_CRLS;
   metadata: {
     caId: string;
     dn: string;
+  };
+}
+
+interface RegenerateCaCrl {
+  type: EventType.REGENERATE_CA_CRL;
+  metadata: {
+    caId: string;
+    caName: string;
+    crlId: string;
+    crlNumber: number;
+    thisUpdate: string;
+    nextUpdate: string;
+    trigger: CaCrlRegenerationTrigger;
   };
 }
 
@@ -3293,6 +3394,7 @@ interface ImportCert {
     profileName?: string;
     caId?: string;
     caName?: string;
+    hasCsr?: boolean;
   };
 }
 
@@ -3348,6 +3450,46 @@ interface RevokeCert {
     applicationId?: string | null;
     applicationName?: string | null;
     revocationReason?: CrlReason;
+    approvalRequestId?: string;
+    requesterName?: string;
+    requesterEmail?: string;
+    crlWarning?: string;
+    source?: CertificateRevocationSource;
+    revokedThroughCertId?: string;
+    revokedThroughCertName?: string;
+  };
+}
+
+interface RequestCertRevocation {
+  type: EventType.REQUEST_CERT_REVOCATION;
+  metadata: {
+    certId: string;
+    cn: string;
+    serialNumber: string;
+    applicationId?: string | null;
+    applicationName?: string | null;
+    revocationReason: CrlReason;
+    approvalRequestId: string;
+    requesterName: string;
+    requesterEmail: string;
+    approvalPolicyId: string;
+    approvalPolicyName: string;
+  };
+}
+
+interface CertRevocationFailed {
+  type: EventType.CERT_REVOCATION_FAILED;
+  metadata: {
+    certId: string;
+    cn: string;
+    serialNumber: string;
+    applicationId: string;
+    applicationName?: string | null;
+    revocationReason: CrlReason;
+    approvalRequestId: string;
+    requesterName: string;
+    requesterEmail: string;
+    error: string;
   };
 }
 
@@ -4140,6 +4282,47 @@ interface ClearPkiApplicationScepEnrollment {
   };
 }
 
+interface SetPkiApplicationMicrosoftAutoenrollmentEnrollment {
+  type: EventType.SET_PKI_APPLICATION_MICROSOFT_AUTOENROLLMENT_ENROLLMENT;
+  metadata: {
+    applicationId: string;
+    applicationName: string;
+    profileId: string;
+    profileName: string;
+    servicePrincipalName: string;
+    keyVersion: number;
+    connectionId: string;
+    connectionName: string;
+    allowedGroups: { sid: string; name: string }[];
+    renewBeforeDays: number;
+    allowAnyChannelBinding: boolean;
+    keytabSource: MicrosoftAutoenrollmentKeytabSource;
+    reusedFromProfileId?: string;
+    reusedFromProfileName?: string;
+  };
+}
+
+interface ClearPkiApplicationMicrosoftAutoenrollmentEnrollment {
+  type: EventType.CLEAR_PKI_APPLICATION_MICROSOFT_AUTOENROLLMENT_ENROLLMENT;
+  metadata: {
+    applicationId: string;
+    applicationName: string;
+    profileId: string;
+    profileName: string;
+  };
+}
+
+interface ReenrollPkiApplicationMicrosoftAutoenrollmentComputers {
+  type: EventType.REENROLL_PKI_APPLICATION_MICROSOFT_AUTOENROLLMENT_COMPUTERS;
+  metadata: {
+    applicationId: string;
+    applicationName: string;
+    profileId: string;
+    profileName: string;
+    templateMajorRevision: number;
+  };
+}
+
 interface GetCertManagerInstanceState {
   type: EventType.GET_CERT_MANAGER_INSTANCE_STATE;
   metadata: {
@@ -4329,7 +4512,9 @@ interface RenewCertificate {
     applicationName?: string | null;
     serialNumber?: string;
     renewalKeySource: CertificateRenewalKeySource;
+    externalConfiguration?: TRenewCertificateDTO["externalConfiguration"];
     changedAttributes: TRenewalAuditChange[];
+    status?: CertificateRequestStatus;
   };
 }
 
@@ -4412,6 +4597,7 @@ interface CreateCmekEvent {
     encryptionAlgorithm: SymmetricKeyAlgorithm | AsymmetricKeyAlgorithm | HmacAlgorithm;
     isExportable?: boolean;
     hasDeleteProtection?: boolean;
+    isPublicKeyPublished?: boolean;
   };
 }
 
@@ -4430,6 +4616,7 @@ interface UpdateCmekEvent {
     name?: string;
     description?: string;
     hasDeleteProtection?: boolean;
+    isPublicKeyPublished?: boolean;
   };
 }
 
@@ -5216,6 +5403,60 @@ interface ReissuePkiSignerCertificateEvent {
   };
 }
 
+interface RenewPkiSignerCertificateEvent {
+  type: EventType.RENEW_PKI_SIGNER_CERTIFICATE;
+  metadata: {
+    signerId: string;
+    name: string;
+    status: string;
+    caId: string;
+    caName: string;
+    previousSerialNumber: string | null;
+  };
+}
+
+interface RevokePkiSignerCertificateEvent {
+  type: EventType.REVOKE_PKI_SIGNER_CERTIFICATE;
+  metadata: {
+    signerId: string;
+    name: string;
+    certificateId: string;
+    certificateCommonName: string;
+    serialNumber: string;
+    revocationReason: CrlReason;
+    status: string;
+    digicertRevocationRequestId?: number;
+  };
+}
+
+interface PkiSignerCertificateRevocationDecidedEvent {
+  type: EventType.PKI_SIGNER_CERTIFICATE_REVOCATION_DECIDED;
+  metadata: {
+    signerId: string;
+    name: string;
+    certificateId: string;
+    certificateCommonName: string;
+    serialNumber: string;
+    revocationReason: CrlReason;
+    digicertRevocationRequestId?: number;
+    decision: string;
+    status: string;
+  };
+}
+
+interface PkiSignerCertificateRevokedByCaEvent {
+  type: EventType.PKI_SIGNER_CERTIFICATE_REVOKED_BY_CA;
+  metadata: {
+    signerId: string;
+    name: string;
+    certificateId: string;
+    certificateCommonName: string;
+    serialNumber: string;
+    previousStatus: string;
+    status: string;
+  };
+}
+
 interface ImportPkiSignerCertificateEvent {
   type: EventType.IMPORT_PKI_SIGNER_CERTIFICATE;
   metadata: {
@@ -5817,7 +6058,10 @@ interface SecretScanningDataSourceGetEvent {
 
 interface SecretScanningDataSourceCreateEvent {
   type: EventType.SECRET_SCANNING_DATA_SOURCE_CREATE;
-  metadata: Omit<TCreateSecretScanningDataSourceDTO, "projectId"> & { dataSourceId: string };
+  metadata: Omit<TCreateSecretScanningDataSourceDTO, "projectId" | "alerts"> & {
+    dataSourceId: string;
+    alerts?: { eventType: string; channelTypes: string[] }[];
+  };
 }
 
 interface SecretScanningDataSourceUpdateEvent {
@@ -5898,9 +6142,20 @@ interface SecretScanningFindingListEvent {
   };
 }
 
+interface SecretScanningFindingLocationListEvent {
+  type: EventType.SECRET_SCANNING_FINDING_LOCATION_LIST;
+  metadata: {
+    findingId: string;
+    findingRule: string;
+    resourceId: string;
+    resourceName: string;
+    count: number;
+  };
+}
+
 interface SecretScanningFindingUpdateEvent {
   type: EventType.SECRET_SCANNING_FINDING_UPDATE;
-  metadata: TUpdateSecretScanningFindingDTO;
+  metadata: TUpdateSecretScanningFindingDTO & { findingRule: string; resourceId: string; resourceName: string };
 }
 
 interface SecretScanningConfigUpdateEvent {
@@ -5940,6 +6195,15 @@ interface SecretScanningConfigReadEvent {
   metadata?: Record<string, never>; // not needed, based off projectId
 }
 
+interface OrgAiConfigUpdateEvent {
+  type: EventType.UPDATE_ORG_AI_CONFIG;
+  metadata: {
+    connectionId: string | null;
+    connectionName: string | null;
+    model: string | null;
+  };
+}
+
 interface OrgUpdateEvent {
   type: EventType.UPDATE_ORG;
   metadata: {
@@ -5949,7 +6213,7 @@ interface OrgUpdateEvent {
     scimEnabled?: boolean;
     defaultMembershipRoleSlug?: string;
     enforceMfa?: boolean;
-    selectedMfaMethod?: string;
+    allowedMfaMethods?: string[];
     allowSecretSharingOutsideOrganization?: boolean;
     bypassOrgAuthEnabled?: boolean;
     userTokenExpiration?: string;
@@ -6635,22 +6899,47 @@ interface AgentVaultAccessBundleDeleteEvent {
   };
 }
 
+// A service's hook: the saved hook by ID and name, and what it checks of the service. No narrowing means every request,
+// or every connection for a database or SSH service.
+type TAgentVaultServiceHookAudit = {
+  id: string;
+  name: string;
+  methods?: string[];
+  paths?: string[];
+  tools?: string[];
+};
+
 interface AgentVaultServiceCreateEvent {
   type: EventType.AGENT_VAULT_SERVICE_CREATE;
   metadata: {
-    accessBundleId: string;
-    accessBundleName: string;
+    // Services belonged to one access bundle until they moved to the project, so these are present only on events
+    // recorded before that.
+    accessBundleId?: string;
+    accessBundleName?: string;
+    // The access bundles the service was in. Absent on events recorded before services moved to the project.
+    accessBundles?: { id: string; name: string }[];
     serviceId: string;
     name: string;
+    description?: string | null;
     serviceType: string;
     // MCP services only.
     serverUrl?: string;
     transport?: string;
-    hostPattern: string;
+    // Database and SSH services only. A host pattern is never set on those, so they report these instead.
+    host?: string;
+    port?: number;
+    database?: string;
+    tlsEnabled?: boolean;
+    tlsVerify?: boolean;
+    // Whether the proxy checks the server's certificate against a CA stored on the service rather than the system's.
+    hasTlsCa?: boolean;
+    // Absent for a database or SSH service.
+    hostPattern?: string;
     credentialType: string;
-    // OAuth credentials only.
+    // OAuth credentials only. A service that sends an OAuth variable's sign-in names the variable instead.
     oauthIssuer?: string;
     oauthScopes?: string[];
+    oauthVariable?: { id: string; key: string };
     headerName?: string;
     headerPrefix?: string;
     allowedMethods?: string[] | null;
@@ -6662,25 +6951,53 @@ interface AgentVaultServiceCreateEvent {
     customHeaderNames?: string[];
     substitutionPlaceholders?: string[];
     variableKeys?: string[];
+    // The saved hook the service was created with and what it checks of the service; no narrowing means every request.
+    hook?: TAgentVaultServiceHookAudit;
+    // Present only on events recorded before hooks became their own resource.
+    hookUrl?: string;
   };
 }
 
 interface AgentVaultServiceUpdateEvent {
   type: EventType.AGENT_VAULT_SERVICE_UPDATE;
   metadata: {
-    accessBundleId: string;
-    accessBundleName: string;
+    // Services belonged to one access bundle until they moved to the project, so these are present only on events
+    // recorded before that.
+    accessBundleId?: string;
+    accessBundleName?: string;
     serviceId: string;
+    // The service's name after the update. Absent on events recorded before it was added; `name` is set only by a rename.
+    serviceName?: string;
     name?: string;
+    // Null when the update removed it.
+    description?: string | null;
     // The service's type, which never changes, so present on every update.
     serviceType: string;
     serverUrl?: string;
     transport?: string;
+    // Database and SSH services only. A host pattern is never set on those, so they report these instead.
+    host?: string;
+    port?: number;
+    database?: string;
+    tlsEnabled?: boolean;
+    tlsVerify?: boolean;
+    // Present only when the update changed the stored CA the proxy checks the server's certificate against.
+    tlsCaChanged?: "set" | "removed" | "replaced";
+    // Present only when the update set, changed or removed the service's hook. `hook` is the hook afterwards, null when
+    // removed, and `previousHook` the one before, null when there was none.
+    hookChanged?: "set" | "removed" | "updated";
+    hook?: TAgentVaultServiceHookAudit | null;
+    previousHook?: TAgentVaultServiceHookAudit | null;
+    // Present only on events recorded before hooks became their own resource.
+    hookUrl?: string;
+    hookSecretReplaced?: boolean;
     hostPattern?: string;
     credentialType?: string;
-    // Present when the update connected or reauthorized an OAuth credential.
+    // Present when the update connected or reauthorized an OAuth credential, or the variable when it chose an OAuth
+    // variable.
     oauthIssuer?: string;
     oauthScopes?: string[];
+    oauthVariable?: { id: string; key: string };
     headerName?: string;
     headerPrefix?: string;
     allowedMethods?: string[] | null;
@@ -6693,6 +7010,8 @@ interface AgentVaultServiceUpdateEvent {
     substitutionPlaceholders?: string[];
     substitutionsReplaced?: string[];
     credentialReplaced: boolean;
+    // Whether the update deleted what members saved for the service: their typed values or their OAuth connections.
+    personalValuesCleared?: boolean;
     // Every key the service uses after the update, present when the update wrote a value that can hold one.
     variableKeys?: string[];
   };
@@ -6701,8 +7020,12 @@ interface AgentVaultServiceUpdateEvent {
 interface AgentVaultServiceDeleteEvent {
   type: EventType.AGENT_VAULT_SERVICE_DELETE;
   metadata: {
-    accessBundleId: string;
-    accessBundleName: string;
+    // Services belonged to one access bundle until they moved to the project, so these are present only on events
+    // recorded before that.
+    accessBundleId?: string;
+    accessBundleName?: string;
+    // The access bundles the service was in. Absent on events recorded before services moved to the project.
+    accessBundles?: { id: string; name: string }[];
     serviceId: string;
     name: string;
   };
@@ -6719,6 +7042,12 @@ interface AgentVaultVariableCreateEvent {
     key: string;
     // global, or personal for a variable only its owner sees and uses. Absent on events from before personal ones.
     scope?: string;
+    // text or oauth. Absent on events from before OAuth variables.
+    type?: string;
+    // OAuth variables only: where its sign-in goes. Never a token.
+    oauthIssuer?: string;
+    oauthTokenEndpoint?: string;
+    oauthScopes?: string[];
   };
 }
 
@@ -6731,8 +7060,15 @@ interface AgentVaultVariableUpdateEvent {
     key: string;
     // global, or personal for a variable only its owner sees and uses. Absent on events from before personal ones.
     scope?: string;
+    // text or oauth. Absent on events from before OAuth variables.
+    type?: string;
+    // OAuth variables only: where its sign-in goes. Never a token.
+    oauthIssuer?: string;
+    oauthTokenEndpoint?: string;
+    oauthScopes?: string[];
     // Present only when the update changed the key.
     previousKey?: string;
+    // For an OAuth variable: whether its tokens were replaced by an import or removed by a disconnect.
     valueReplaced: boolean;
   };
 }
@@ -6746,6 +7082,25 @@ interface AgentVaultVariableDeleteEvent {
     key: string;
     // global, or personal for a variable only its owner sees and uses. Absent on events from before personal ones.
     scope?: string;
+    // text or oauth. Absent on events from before OAuth variables.
+    type?: string;
+    // OAuth variables only: where its sign-in goes. Never a token.
+    oauthIssuer?: string;
+    oauthTokenEndpoint?: string;
+    oauthScopes?: string[];
+  };
+}
+
+// An OAuth variable that got tokens: a sign-in (`sign-in` the first time, `reconnect` when it replaced tokens) or tokens
+// an API caller imported (`import`). Recorded only on success, and never with a token.
+interface AgentVaultOauthVariableConnectEvent {
+  type: EventType.AGENT_VAULT_OAUTH_VARIABLE_CONNECT;
+  metadata: {
+    variableId: string;
+    key: string;
+    method: "sign-in" | "reconnect" | "import";
+    oauthIssuer: string;
+    oauthScopes: string[];
   };
 }
 
@@ -6765,8 +7120,10 @@ interface AgentVaultVariableValueViewEvent {
 interface AgentVaultPersonalValuesSetEvent {
   type: EventType.AGENT_VAULT_PERSONAL_VALUES_SET;
   metadata: {
-    accessBundleId: string;
-    accessBundleName: string;
+    // Services belonged to one access bundle until they moved to the project, so these are present only on events
+    // recorded before that.
+    accessBundleId?: string;
+    accessBundleName?: string;
     serviceId: string;
     serviceName: string;
     // Which credential the fields belong to: credential-value is a token for bearer and a password for basic.
@@ -6774,14 +7131,19 @@ interface AgentVaultPersonalValuesSetEvent {
     // The fields this update set. A field it left out kept its saved value.
     fields: string[];
     variableKeys: string[];
+    // Set when the member connected their own OAuth account.
+    oauthIssuer?: string;
+    oauthScopes?: string[];
   };
 }
 
 interface AgentVaultPersonalValuesDeleteEvent {
   type: EventType.AGENT_VAULT_PERSONAL_VALUES_DELETE;
   metadata: {
-    accessBundleId: string;
-    accessBundleName: string;
+    // Services belonged to one access bundle until they moved to the project, so these are present only on events
+    // recorded before that.
+    accessBundleId?: string;
+    accessBundleName?: string;
     serviceId: string;
     serviceName: string;
     credentialType: string;
@@ -6847,6 +7209,41 @@ interface AgentVaultSkillDeleteEvent {
   };
 }
 
+interface AgentVaultHookCreateEvent {
+  type: EventType.AGENT_VAULT_HOOK_CREATE;
+  metadata: {
+    hookId: string;
+    hookName: string;
+    url: string;
+  };
+}
+
+interface AgentVaultHookUpdateEvent {
+  type: EventType.AGENT_VAULT_HOOK_UPDATE;
+  metadata: {
+    hookId: string;
+    // The hook's name after the update; `name` is set only by a rename.
+    hookName: string;
+    name?: string;
+    // Null when the update removed it.
+    description?: string | null;
+    url?: string;
+    // Whether a new secret was saved. The secret itself is never recorded.
+    secretReplaced: boolean;
+  };
+}
+
+interface AgentVaultHookDeleteEvent {
+  type: EventType.AGENT_VAULT_HOOK_DELETE;
+  metadata: {
+    hookId: string;
+    hookName: string;
+    url: string;
+    // The project's services that used the hook and are no longer checked by it.
+    services: { id: string; name: string }[];
+  };
+}
+
 interface AgentVaultAccessBundleSkillAddEvent {
   type: EventType.AGENT_VAULT_ACCESS_BUNDLE_SKILL_ADD;
   metadata: {
@@ -6867,14 +7264,45 @@ interface AgentVaultAccessBundleSkillRemoveEvent {
   };
 }
 
+interface AgentVaultAccessBundleServiceAddEvent {
+  type: EventType.AGENT_VAULT_ACCESS_BUNDLE_SERVICE_ADD;
+  metadata: {
+    serviceId: string;
+    serviceName: string;
+    accessBundleId: string;
+    accessBundleName: string;
+  };
+}
+
+// The service stays in the project. Personal values of members who reached it only through this bundle are deleted.
+interface AgentVaultAccessBundleServiceRemoveEvent {
+  type: EventType.AGENT_VAULT_ACCESS_BUNDLE_SERVICE_REMOVE;
+  metadata: {
+    serviceId: string;
+    serviceName: string;
+    accessBundleId: string;
+    accessBundleName: string;
+  };
+}
+
 // Recorded once per fetch when the CLI gets a session's skills at agent start, not when the agent reads them.
 interface AgentVaultSkillsDeliveredEvent {
   type: EventType.AGENT_VAULT_SKILLS_DELIVERED;
   metadata: {
     sessionId: string;
-    accessBundleId: string;
-    accessBundleName: string;
-    skills: { skillId: string; skillName: string; version: number; sha256: string }[];
+    // The session's access bundle, when any skill delivered came through it.
+    accessBundleId: string | null;
+    accessBundleName: string | null;
+    skills: {
+      skillId: string;
+      skillName: string;
+      version: number;
+      sha256: string;
+      // Null for a skill the session lists by name or was sent with, rather than one it got through its access bundle.
+      accessBundleId: string | null;
+      accessBundleName: string | null;
+      isInline: boolean;
+    }[];
     // Set when the machine identity in the actor started the session on this user's behalf.
     onBehalfOfUserId?: string;
     onBehalfOfUserName?: string;
@@ -6958,9 +7386,65 @@ interface AgentVaultSessionMintEvent {
   metadata: {
     sessionId: string;
     label: string | null;
-    accessBundleId: string;
-    accessBundleName: string;
+    // The session's own key/value metadata. Set when the session was created with some.
+    metadata?: Record<string, string>;
+    // Null for a session started without an access bundle.
+    accessBundleId: string | null;
+    accessBundleName: string | null;
     expiresAt: string | null;
+    // Set when the session has skills besides its access bundle's, in the order they were sent, the same way as the
+    // API's. One sent inline also carries the hash and size of its files, never the files.
+    skills?: (
+      | { skillId: string; name: string; isInline: false }
+      | {
+          skillId: string;
+          name: string;
+          isInline: true;
+          description: string;
+          sha256: string;
+          sizeBytes: number;
+          fileCount: number;
+        }
+    )[];
+    // Set when the session has services besides its access bundle's, in the order they were sent, the same way as the
+    // API's. One an admin sent inline also carries what it was sent with, never its values.
+    services?: (
+      | { serviceId: string; name: string; isInline: false }
+      | {
+          serviceId: string;
+          // The name it was sent with, or its first host when it was sent without one.
+          name: string;
+          isInline: true;
+          description?: string | null;
+          serviceType: string;
+          serverUrl?: string;
+          transport?: string;
+          // Absent for a database or SSH service, which reports host, port and database instead.
+          hostPattern?: string;
+          host?: string;
+          port?: number;
+          database?: string;
+          tlsEnabled?: boolean;
+          tlsVerify?: boolean;
+          // Whether the proxy checks the server's certificate against a CA sent with the service rather than the system's.
+          hasTlsCa?: boolean;
+          credentialType: string;
+          headerName?: string;
+          // OAuth only: the OAuth variable whose sign-in the service sends, or the issuer of tokens sent with the session.
+          oauthVariable?: { id: string; key: string };
+          oauthIssuer?: string;
+          allowedMethods: string[] | null;
+          allowedPathPrefixes: string[] | null;
+          // Absent for every type but MCP. Null when the agent can call every tool.
+          allowedTools?: string[] | null;
+          customHeaderNames: string[];
+          substitutionPlaceholders: string[];
+          // The saved hook the service was sent with and what it checks of the service.
+          hook?: TAgentVaultServiceHookAudit;
+          // Present only on events recorded before hooks became their own resource.
+          hookUrl?: string;
+        }
+    )[];
     // Set when a machine identity started the session on this user's behalf.
     onBehalfOfUserId?: string;
     onBehalfOfUserName?: string;
@@ -6974,6 +7458,8 @@ interface AgentVaultSessionUpdateEvent {
     sessionId: string;
     label: string | null;
     previousLabel: string | null;
+    // The session's own key/value metadata after the update.
+    metadata?: Record<string, string>;
     sessionOwner: string;
     accessBundleName: string | null;
     // Set when the machine identity in sessionOwner started the session on this user's behalf.
@@ -6990,6 +7476,8 @@ interface AgentVaultSessionRevokeEvent {
     label: string | null;
     sessionOwner: string;
     accessBundleName: string | null;
+    // Set when the session was ended with its own token rather than by a signed-in user or identity.
+    revokedWithToken?: boolean;
     // Set when the machine identity in sessionOwner started the session on this user's behalf.
     onBehalfOfUserId?: string;
     onBehalfOfUserName?: string;
@@ -7206,6 +7694,7 @@ interface PamApprovalConfigUpdateEvent {
     notificationConfigCount?: number;
     breakGlassUserCount?: number;
     autoApprovalRuleCount?: number;
+    emailApproversOnRequest?: boolean;
   };
 }
 
@@ -7446,6 +7935,8 @@ interface ApprovalRequestCancelEvent {
     approvalRequestId: string;
     requesterName: string;
     requesterEmail: string;
+    // Set when Infisical cancelled the request rather than its requester.
+    reason?: string;
   } & TApprovalRequestSubjectMetadata;
 }
 
@@ -7572,7 +8063,7 @@ interface AccessApprovalRequestDelegatedDecisionEvent {
     permissions?: string[];
     outcome: string;
     decision?: string;
-    decidedBy?: string;
+    approvedBy?: string[];
     decidedAt?: string;
     decisionNotes?: string;
     reason?: string;
@@ -7914,6 +8405,39 @@ interface ScepRenewalEvent {
     issuedSerialNumber?: string;
     clientIp: string;
   };
+}
+
+interface MicrosoftAutoenrollmentIssuanceEvent {
+  type: EventType.MICROSOFT_AUTOENROLLMENT_ISSUANCE | EventType.MICROSOFT_AUTOENROLLMENT_RENEWAL;
+  metadata: {
+    applicationId: string;
+    applicationName?: string;
+    profileId: string;
+    profileName: string;
+    computerName: string;
+    computerSid: string;
+    dnsHostName: string;
+    result: MicrosoftAutoenrollmentIssuanceResult;
+    certificateId?: string;
+    serialNumber?: string;
+    certificateRequestId: string;
+    requestNumber: string;
+  };
+}
+
+interface MicrosoftAutoenrollmentRequestRefusedEvent {
+  type: EventType.MICROSOFT_AUTOENROLLMENT_REQUEST_REFUSED;
+  metadata: {
+    applicationId: string;
+    applicationName?: string;
+    profileId: string;
+    profileName: string;
+    reason: KerberosFailureReason | MicrosoftAutoenrollmentFailureReason;
+    computerName?: string;
+    ticketServiceName?: string;
+    ticketKeyVersion?: number;
+    message?: string;
+  } & TAuditLogCollapseSummary;
 }
 
 interface ScepDynamicChallengeGeneratedEvent {
@@ -8346,6 +8870,7 @@ interface CreateHoneyTokenEvent {
     honeyTokenId: string;
     name: string;
     type: HoneyTokenType;
+    managedBy: HoneyTokenManagedBy;
     environment: string;
     secretPath: string;
   };
@@ -8415,6 +8940,7 @@ export interface SecretFolderAccessEventMetadata {
   environment: string;
   secretPath: string;
   permission: string;
+  isPermissionRecursive: boolean;
   userId?: string;
   identityId?: string;
   isTemporary: boolean;
@@ -8475,6 +9001,28 @@ interface DeleteAlertEvent {
   };
 }
 
+type TAuditLogStreamEventMetadata = {
+  logStreamId: string;
+  provider: string;
+  destinationHost: string;
+  filters: { products?: string[]; pamSessionActivity?: { includeOutput: boolean } | null } | null;
+};
+
+interface CreateAuditLogStreamEvent {
+  type: EventType.CREATE_AUDIT_LOG_STREAM;
+  metadata: TAuditLogStreamEventMetadata;
+}
+
+interface UpdateAuditLogStreamEvent {
+  type: EventType.UPDATE_AUDIT_LOG_STREAM;
+  metadata: TAuditLogStreamEventMetadata;
+}
+
+interface DeleteAuditLogStreamEvent {
+  type: EventType.DELETE_AUDIT_LOG_STREAM;
+  metadata: { logStreamId: string; provider: string; destinationHost: string };
+}
+
 interface TestAlertChannelEvent {
   type: EventType.TEST_ALERT_CHANNEL;
   metadata: {
@@ -8494,6 +9042,9 @@ export type Event =
   | UpdateAlertEvent
   | DeleteAlertEvent
   | TestAlertChannelEvent
+  | CreateAuditLogStreamEvent
+  | UpdateAuditLogStreamEvent
+  | DeleteAuditLogStreamEvent
   | CreateSubOrganizationEvent
   | UpdateSubOrganizationEvent
   | DeleteSubOrganizationEvent
@@ -8669,7 +9220,10 @@ export type Event =
   | GetCaCert
   | SignIntermediate
   | ImportCaCert
+  | ImportCaCrossSignedCert
+  | DeleteCaCrossSignedCert
   | GetCaCrls
+  | RegenerateCaCrl
   | GenerateCaCertificate
   | InstallCaCertVenafi
   | InstallCaCertAdcs
@@ -8685,6 +9239,8 @@ export type Event =
   | GetCert
   | DeleteCert
   | RevokeCert
+  | RequestCertRevocation
+  | CertRevocationFailed
   | AssignCertToApplication
   | GetCertBody
   | GetCertPrivateKey
@@ -8755,6 +9311,9 @@ export type Event =
   | RotatePkiApplicationAcmeEabSecret
   | SetPkiApplicationScepEnrollment
   | ClearPkiApplicationScepEnrollment
+  | SetPkiApplicationMicrosoftAutoenrollmentEnrollment
+  | ClearPkiApplicationMicrosoftAutoenrollmentEnrollment
+  | ReenrollPkiApplicationMicrosoftAutoenrollmentComputers
   | GetCertManagerInstanceState
   | SetCertManagerActiveProject
   | InviteCertManagerUsers
@@ -8872,6 +9431,10 @@ export type Event =
   | EnablePkiSignerEvent
   | DisablePkiSignerEvent
   | ReissuePkiSignerCertificateEvent
+  | RenewPkiSignerCertificateEvent
+  | RevokePkiSignerCertificateEvent
+  | PkiSignerCertificateRevocationDecidedEvent
+  | PkiSignerCertificateRevokedByCaEvent
   | ImportPkiSignerCertificateEvent
   | ExportPkiSignerCertificateEvent
   | UpdatePkiSignerApprovalPolicyEvent
@@ -8947,10 +9510,12 @@ export type Event =
   | SecretScanningResourceRemoveEvent
   | SecretScanningScanListEvent
   | SecretScanningFindingListEvent
+  | SecretScanningFindingLocationListEvent
   | SecretScanningFindingUpdateEvent
   | SecretScanningConfigUpdateEvent
   | SecretScanningConfigReadEvent
   | OrgUpdateEvent
+  | OrgAiConfigUpdateEvent
   | ProjectCreateEvent
   | ProjectUpdateEvent
   | ProjectDeleteEvent
@@ -9025,8 +9590,12 @@ export type Event =
   | AgentVaultVariableUpdateEvent
   | AgentVaultVariableDeleteEvent
   | AgentVaultVariableValueViewEvent
+  | AgentVaultOauthVariableConnectEvent
   | AgentVaultPersonalValuesSetEvent
   | AgentVaultPersonalValuesDeleteEvent
+  | AgentVaultHookCreateEvent
+  | AgentVaultHookUpdateEvent
+  | AgentVaultHookDeleteEvent
   | AgentVaultSkillCreateEvent
   | AgentVaultSkillVersionCreateEvent
   | AgentVaultSkillVersionRestoreEvent
@@ -9035,6 +9604,8 @@ export type Event =
   | AgentVaultSkillDeleteEvent
   | AgentVaultAccessBundleSkillAddEvent
   | AgentVaultAccessBundleSkillRemoveEvent
+  | AgentVaultAccessBundleServiceAddEvent
+  | AgentVaultAccessBundleServiceRemoveEvent
   | AgentVaultSkillsDeliveredEvent
   | AgentVaultProductMemberAddEvent
   | AgentVaultProductMemberUpdateEvent
@@ -9139,6 +9710,8 @@ export type Event =
   | ScepEnrollmentEvent
   | ScepRenewalEvent
   | ScepDynamicChallengeGeneratedEvent
+  | MicrosoftAutoenrollmentIssuanceEvent
+  | MicrosoftAutoenrollmentRequestRefusedEvent
   | SecretValidationRuleCreateEvent
   | SecretValidationRuleUpdateEvent
   | SecretValidationRuleDeleteEvent

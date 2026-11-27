@@ -2,13 +2,14 @@ import { MongoAbility } from "@casl/ability";
 import { Knex } from "knex";
 
 import { SecretType, TSecretFolders, TSecretsV2, TSecretsV2Insert, TSecretsV2Update } from "@app/db/schemas";
+import { TCipherPair, TKmsDataKeyService } from "@app/domains/platform/kms-core/ce/module";
 import { TPermissionServiceFactory } from "@app/ee/services/permission/permission-service-types";
 import { ProjectPermissionSecretActions, ProjectPermissionSet } from "@app/ee/services/permission/project-permission";
-import { TSecretApprovalPolicyServiceFactory } from "@app/ee/services/secret-approval-policy/secret-approval-policy-service";
-import { TSecretApprovalRequestCreationFnsFactory } from "@app/ee/services/secret-approval-request/secret-approval-request-creation-fns";
+import { TSecretChangePolicyServiceFactory } from "@app/ee/services/secret-change-policy/secret-change-policy-service";
+import { TSecretChangeRequestServiceFactory } from "@app/ee/services/secret-change-request/secret-change-request-service";
+import { TEventEmitter } from "@app/lib/knex/event-emitter";
 import { OrderByDirection, TProjectPermission } from "@app/lib/types";
 import { ActorAuthMethod, ActorType } from "@app/services/auth/auth-type";
-import { TKmsServiceFactory } from "@app/services/kms/kms-service";
 import { TProjectDALFactory } from "@app/services/project/project-dal";
 import { TSecretFolderDALFactory } from "@app/services/secret-folder/secret-folder-dal";
 import { TSecretTagDALFactory } from "@app/services/secret-tag/secret-tag-dal";
@@ -20,13 +21,12 @@ import {
   SecretSortField
 } from "@app/services/secret/secret-types";
 
-import { TEventEmitter } from "../event-outbox/event-outbox-types";
 import { TCommitResourceChangeDTO, TFolderCommitServiceFactory } from "../folder-commit/folder-commit-service";
 import { TReminderServiceFactory } from "../reminder/reminder-types";
 import { TResourceMetadataDALFactory } from "../resource-metadata/resource-metadata-dal";
 import { ResourceMetadataWithEncryptionDTO } from "../resource-metadata/resource-metadata-schema";
 import { TSecretValidationRuleServiceFactory } from "../secret-validation-rule/secret-validation-rule-service";
-import { TSecretValueBlindIndexes } from "./secret-blind-index-fns";
+import { TSecretBlindIndexer, TSecretValueBlindIndexes } from "./secret-blind-index-fns";
 import { TSecretEventScope } from "./secret-events";
 import { TSecretV2BridgeDALFactory } from "./secret-v2-bridge-dal";
 import { TSecretVersionV2DALFactory } from "./secret-version-dal";
@@ -282,6 +282,11 @@ export type TFnSecretBulkDelete = {
 // a source/destination folder resolved by folderDAL.findBySecretPath (carries id, path and environment)
 export type TMoveSecretResolvedFolder = NonNullable<Awaited<ReturnType<TSecretFolderDALFactory["findBySecretPath"]>>>;
 
+export type TSecretWriteCiphers = {
+  secretManager: TCipherPair;
+  blindIndexer: TSecretBlindIndexer;
+};
+
 // performs the two-step move (create/update at destination + delete at source) inside the caller-supplied
 // transaction. does no snapshot/sync/cache-invalidation — the caller runs those after the tx commits.
 export type TFnSecretMove = {
@@ -297,7 +302,7 @@ export type TFnSecretMove = {
   actorOrgId: string;
   permission: MongoAbility<ProjectPermissionSet>;
   tx: Knex;
-  kmsService: Pick<TKmsServiceFactory, "createCipherPairWithDataKey">;
+  kmsDataKeyService: TKmsDataKeyService;
   folderDAL: Pick<TSecretFolderDALFactory, "findBySecretPath" | "findSecretPathByFolderIds">;
   secretDAL: Pick<
     TSecretV2BridgeDALFactory,
@@ -318,11 +323,8 @@ export type TFnSecretMove = {
   resourceMetadataDAL: Pick<TResourceMetadataDALFactory, "insertMany" | "delete">;
   folderCommitService: Pick<TFolderCommitServiceFactory, "createCommit">;
   eventEmitter: TEventEmitter;
-  secretApprovalPolicyService: Pick<TSecretApprovalPolicyServiceFactory, "getSecretApprovalPolicy">;
-  secretApprovalRequestCreationFns: Pick<
-    TSecretApprovalRequestCreationFnsFactory,
-    "createSecretApprovalRequestV2Bridge"
-  >;
+  secretChangePolicyService: Pick<TSecretChangePolicyServiceFactory, "getSecretApprovalPolicy">;
+  secretChangeRequestService: Pick<TSecretChangeRequestServiceFactory, "createSecretApprovalRequestV2Bridge">;
   secretQueueService: Pick<TSecretQueueFactory, "syncSecrets">;
   reminderService: Pick<TReminderServiceFactory, "moveReminders" | "copyReminders">;
   secretValidationRuleService: Pick<TSecretValidationRuleServiceFactory, "validateSecrets">;
@@ -534,6 +536,13 @@ export type TGetSecretsMultiEnvDTO = Pick<
   sortEnvironment?: string;
   environments: string[];
   isInternal?: boolean;
+};
+
+export type TGetSecretKeyEnvironmentsDTO = Pick<
+  TGetSecretsMultiEnvDTO,
+  "actorId" | "actor" | "path" | "projectId" | "actorOrgId" | "actorAuthMethod" | "environments"
+> & {
+  secretKey: string;
 };
 
 export type TGetSecretsRawByFolderMappingsDTO = {

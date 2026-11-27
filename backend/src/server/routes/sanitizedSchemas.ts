@@ -16,11 +16,13 @@ import {
   SecretTagsSchema,
   UsersSchema
 } from "@app/db/schemas";
+import { AwsHoneyTokenRowConfigSchema } from "@app/ee/services/honey-token/honey-token-types";
 import { ProjectPermissionActions, ProjectPermissionSub } from "@app/ee/services/permission/project-permission";
 import {
   SanitizedProxiedServiceBaseSchema,
   SanitizedProxiedServiceCredentialSchema
 } from "@app/ee/services/proxied-service/proxied-service-schemas";
+import { SECRET_CHANGE_POLICIES } from "@app/lib/api-docs";
 import { ResourceMetadataNonEncryptionSchema } from "@app/services/resource-metadata/resource-metadata-schema";
 
 import { UnpackedPermissionSchema } from "./sanitizedSchema/permission";
@@ -112,6 +114,10 @@ export const sapPubSchema = SecretApprovalPoliciesSchema.merge(
     projectId: z.string()
   })
 );
+
+export const secretChangePolicyPubSchema = sapPubSchema.extend({
+  enforceOnSecretImports: z.boolean().describe(SECRET_CHANGE_POLICIES.enforceOnSecretImports)
+});
 
 export const SanitizedUserSchema = UsersSchema.pick({
   username: true,
@@ -299,6 +305,8 @@ export const SanitizedHoneyTokenSchema = HoneyTokensSchema.pick({
   createdAt: true,
   updatedAt: true
 }).extend({
+  config: AwsHoneyTokenRowConfigSchema,
+  folderId: z.string().uuid(),
   environment: z.object({
     id: z.string(),
     name: z.string(),

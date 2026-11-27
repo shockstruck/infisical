@@ -46,7 +46,8 @@ export const PkiDocsUrls = {
       api: `${PKI_DOCS_BASE_URL}/applications/enrollment-methods/api`,
       acme: `${PKI_DOCS_BASE_URL}/applications/enrollment-methods/acme`,
       est: `${PKI_DOCS_BASE_URL}/applications/enrollment-methods/est`,
-      scep: `${PKI_DOCS_BASE_URL}/applications/enrollment-methods/scep`
+      scep: `${PKI_DOCS_BASE_URL}/applications/enrollment-methods/scep`,
+      microsoftAutoenrollment: `${PKI_DOCS_BASE_URL}/applications/enrollment-methods/microsoft-autoenrollment`
     },
     alerting: {
       overview: `${PKI_DOCS_BASE_URL}/applications/alerting/overview`,
@@ -74,6 +75,7 @@ export const PkiDocsUrls = {
     internal: `${PKI_DOCS_BASE_URL}/ca/private-ca`,
     external: `${PKI_DOCS_BASE_URL}/ca/external-ca`,
     renewal: `${PKI_DOCS_BASE_URL}/ca/ca-renewal`,
+    crossSignedCertificates: `${PKI_DOCS_BASE_URL}/ca/cross-signed-certificates`,
     crlDistribution: `${PKI_DOCS_BASE_URL}/ca/crl-distribution`,
     // External CA types
     acmeCa: `${PKI_DOCS_BASE_URL}/ca/acme-ca`,

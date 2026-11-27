@@ -19,6 +19,7 @@ import { BadRequestError, NotFoundError } from "@app/lib/errors";
 import { logger } from "@app/lib/logger";
 import { QueueName, TQueueServiceFactory } from "@app/queue";
 import { TCertificateAuthorityDALFactory } from "@app/services/certificate-authority/certificate-authority-dal";
+import { CaType } from "@app/services/certificate-authority/certificate-authority-enums";
 import {
   CertificateIssuanceOperation,
   domainComponentsSchema,
@@ -33,7 +34,8 @@ import { TCertificateDALFactory } from "@app/services/certificate/certificate-da
 import { TCertificateServiceFactory } from "@app/services/certificate/certificate-service";
 import { TPkiApplicationDALFactory } from "@app/services/pki-application/pki-application-dal";
 
-import { ActorAuthMethod, ActorType } from "../auth/auth-type";
+import { ActorAuthMethod, ActorType, PROTOCOL_ENROLLMENT_ACTORS } from "../auth/auth-type";
+import { TDigiCertCertificateAuthorityFns } from "../certificate-authority/digicert/digicert-certificate-authority-fns";
 import { TIdentityDALFactory } from "../identity/identity-dal";
 import { TResourceMetadataDALFactory } from "../resource-metadata/resource-metadata-dal";
 import { TUserDALFactory } from "../user/user-dal";
@@ -62,6 +64,7 @@ type TCertificateRequestServiceFactoryDep = {
   certificateProfileDAL: Pick<TCertificateProfileDALFactory, "findById">;
   certificateAuthorityDAL: Pick<TCertificateAuthorityDALFactory, "findById" | "findByIdWithAssociatedCa">;
   auditLogService: Pick<TAuditLogServiceFactory, "createCollapsedAuditLog">;
+  digicertFns: Pick<TDigiCertCertificateAuthorityFns, "cancelPendingRequest">;
 };
 
 export type TCertificateRequestServiceFactory = ReturnType<typeof certificateRequestServiceFactory>;
@@ -162,7 +165,8 @@ export const certificateRequestServiceFactory = ({
   identityDAL,
   certificateProfileDAL,
   certificateAuthorityDAL,
-  auditLogService
+  auditLogService,
+  digicertFns
 }: TCertificateRequestServiceFactoryDep) => {
   const $resolveApplicationName = async (applicationId?: string | null) => {
     if (!applicationId) return null;
@@ -186,8 +190,7 @@ export const certificateRequestServiceFactory = ({
       !internal &&
       actor !== ActorType.ACME_ACCOUNT &&
       actor !== ActorType.PLATFORM &&
-      actor !== ActorType.EST_ACCOUNT &&
-      actor !== ActorType.SCEP_ACCOUNT
+      !PROTOCOL_ENROLLMENT_ACTORS.has(actor)
     ) {
       const { permission } = await permissionService.getProjectPermission({
         actor,
@@ -698,6 +701,16 @@ export const certificateRequestServiceFactory = ({
     } else if (actor === ActorType.IDENTITY) {
       const identity = await identityDAL.findById(actorId);
       actorLabel = identity?.name ? `identity ${identity.name}` : "identity";
+    }
+
+    if (previousStatus === CertificateRequestStatus.PENDING_VALIDATION && certificateRequest.caId) {
+      const ca = await certificateAuthorityDAL.findByIdWithAssociatedCa(certificateRequest.caId);
+      if (ca?.externalCa?.type === CaType.DIGICERT) {
+        await digicertFns.cancelPendingRequest({
+          caId: certificateRequest.caId,
+          metadata: certificateRequest.metadata
+        });
+      }
     }
 
     const updated = await certificateRequestDAL.transitionFromPending(

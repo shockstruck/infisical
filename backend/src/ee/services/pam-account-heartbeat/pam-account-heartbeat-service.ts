@@ -1,3 +1,5 @@
+import { TInstanceConfigService } from "@app/domains/platform/instance-config-core/ce/module";
+import { KmsDataKey, TKmsDataKeyService } from "@app/domains/platform/kms-core/ce/module";
 import { TGatewayPoolServiceFactory } from "@app/ee/services/gateway-pool/gateway-pool-service";
 import { testBuiltConnectionWithGateway } from "@app/ee/services/gateway-v2/gateway-v2-fns";
 import { TGatewayV2ServiceFactory } from "@app/ee/services/gateway-v2/gateway-v2-service";
@@ -7,8 +9,6 @@ import { NotFoundError } from "@app/lib/errors";
 import { GatewayFailureKind } from "@app/lib/gateway-v2/test-connection-rpc";
 import { logger } from "@app/lib/logger";
 import { createSshCert, createSshKeyPair, SshCertKeyAlgorithm, SshCertType } from "@app/lib/ssh";
-import { TKmsServiceFactory } from "@app/services/kms/kms-service";
-import { KmsDataKey } from "@app/services/kms/kms-types";
 import { TProjectDALFactory } from "@app/services/project/project-dal";
 
 import { isWindowsRotatableType, redactRotationError, TRotatableType } from "../pam-account-rotation/pam-rotation-fns";
@@ -47,8 +47,9 @@ import {
 type TPamAccountHeartbeatServiceFactoryDep = {
   pamAccountDAL: TPamAccountDALFactory;
   gatewayV2Service: Pick<TGatewayV2ServiceFactory, "getPlatformConnectionDetailsByGatewayId">;
-  gatewayPoolService: Pick<TGatewayPoolServiceFactory, "resolveEffectiveGatewayId">;
-  kmsService: Pick<TKmsServiceFactory, "createCipherPairWithDataKey">;
+  gatewayPoolService: Pick<TGatewayPoolServiceFactory, "resolveEffectiveGatewayId" | "assertGatewayBindingInOrg">;
+  kmsDataKeyService: TKmsDataKeyService;
+  instanceConfigService: TInstanceConfigService;
   permissionService: TPermissionServiceFactory;
   projectDAL: Pick<TProjectDALFactory, "findById">;
   rotationHandlers?: typeof PAM_ROTATION_FACTORY_MAP;
@@ -60,13 +61,14 @@ export const pamAccountHeartbeatServiceFactory = ({
   pamAccountDAL,
   gatewayV2Service,
   gatewayPoolService,
-  kmsService,
+  kmsDataKeyService,
+  instanceConfigService,
   permissionService,
   projectDAL,
   rotationHandlers = PAM_ROTATION_FACTORY_MAP
 }: TPamAccountHeartbeatServiceFactoryDep) => {
   const withCipher = async (projectId: string) =>
-    kmsService.createCipherPairWithDataKey({ type: KmsDataKey.SecretManager, projectId });
+    kmsDataKeyService.createCipherPairWithDataKey({ type: KmsDataKey.SecretManager, projectId });
 
   const decrypt = async (projectId: string, blob: Buffer): Promise<Record<string, unknown>> => {
     const { decryptor } = await withCipher(projectId);
@@ -152,13 +154,19 @@ export const pamAccountHeartbeatServiceFactory = ({
     const validateCloud = CLOUD_CONNECTION_VALIDATORS[accountType];
     if (validateCloud) {
       try {
-        await validateCloud({ connectionDetails, credentials, orgId });
+        await validateCloud({ connectionDetails, credentials, orgId, instanceConfigService });
         return { status: PamHeartbeatStatus.Healthy };
       } catch (err) {
         const status = classifyCloudProbeError(err);
         return { status, message: err instanceof Error ? err.message : "Unable to validate credentials" };
       }
     }
+
+    await gatewayPoolService.assertGatewayBindingInOrg({
+      gatewayId: account.gatewayId ?? account.templateGatewayId,
+      gatewayPoolId: account.gatewayPoolId ?? account.templateGatewayPoolId,
+      orgId
+    });
 
     // The shared connection test only reaches these over TCP; the rotation handlers hold the real probe.
     if (isWindowsRotatableType(accountType)) {

@@ -1,6 +1,5 @@
 import { ForbiddenError, subject } from "@casl/ability";
 import { requestContext } from "@fastify/request-context";
-import https from "https";
 import jwt from "jsonwebtoken";
 import { JwksClient } from "jwks-rsa";
 
@@ -11,7 +10,9 @@ import {
   OrganizationActionScope,
   TIdentityJwtAuthsUpdate
 } from "@app/db/schemas";
-import { TLicenseServiceFactory } from "@app/ee/services/license/license-service";
+import { TInstanceConfigService } from "@app/domains/platform/instance-config-core/ce/module";
+import { KmsDataKey, TKmsDataKeyService } from "@app/domains/platform/kms-core/ce/module";
+import { PlanFeature, TLicenseService } from "@app/domains/platform/license/ce/module";
 import { OrgPermissionIdentityActions, OrgPermissionSubjects } from "@app/ee/services/permission/org-permission";
 import { TPermissionServiceFactory } from "@app/ee/services/permission/permission-service-types";
 import { ProjectPermissionIdentityActions, ProjectPermissionSub } from "@app/ee/services/permission/project-permission";
@@ -20,6 +21,7 @@ import { getConfig } from "@app/lib/config/env";
 import { crypto } from "@app/lib/crypto";
 import { BadRequestError, ForbiddenRequestError, NotFoundError, UnauthorizedError } from "@app/lib/errors";
 import { extractIPDetails, isValidIpOrCidr, TIp } from "@app/lib/ip";
+import { TEventEmitter } from "@app/lib/knex/event-emitter";
 import { logger, sanitizeUrlForLog } from "@app/lib/logger";
 import { requestMemoKeys } from "@app/lib/request-context/memo-keys";
 import { RequestContextKey } from "@app/lib/request-context/request-context-keys";
@@ -31,8 +33,7 @@ import {
   recordAuthAttemptMetric
 } from "@app/lib/telemetry/metrics";
 import { getValueByDot } from "@app/lib/template/dot-access";
-import { blockLocalAndPrivateIpAddresses } from "@app/lib/validator";
-import { TEventEmitter } from "@app/services/event-outbox/event-outbox-types";
+import { blockLocalAndPrivateIpAddresses, buildSsrfSafeJwksFetcher } from "@app/lib/validator";
 import {
   emitIdentityAuthMethodChanged,
   IdentityAuthMethodChange
@@ -44,8 +45,6 @@ import { TIdentityAccessTokenServiceFactory } from "../identity-access-token/ide
 import { assertIdentityAuthAccessAllowed } from "../identity/identity-auth-permission-fns";
 import { splitCommaSeparatedPolicyValues } from "../identity/identity-auth-policy-values";
 import { TIdentityDALFactory } from "../identity/identity-dal";
-import { TKmsServiceFactory } from "../kms/kms-service";
-import { KmsDataKey } from "../kms/kms-types";
 import { TMembershipIdentityDALFactory } from "../membership-identity/membership-identity-dal";
 import { recordIdentityLastLoginDebounced } from "../membership-identity/membership-identity-fns";
 import { TOrgDALFactory } from "../org/org-dal";
@@ -71,8 +70,9 @@ type TIdentityJwtAuthServiceFactoryDep = {
     TPermissionServiceFactory,
     "getOrgPermission" | "getProjectPermission" | "getActorGrantAbilities"
   >;
-  licenseService: Pick<TLicenseServiceFactory, "getPlan">;
-  kmsService: Pick<TKmsServiceFactory, "createCipherPairWithDataKey">;
+  licenseService: TLicenseService;
+  kmsDataKeyService: TKmsDataKeyService;
+  instanceConfigService: TInstanceConfigService;
   orgDAL: Pick<TOrgDALFactory, "findById" | "findOne" | "findEffectiveOrgMembership">;
   identityAccessTokenService: Pick<
     TIdentityAccessTokenServiceFactory,
@@ -90,8 +90,9 @@ export const identityJwtAuthServiceFactory = ({
   keyStore,
   permissionService,
   licenseService,
+  instanceConfigService,
   identityAccessTokenDAL,
-  kmsService,
+  kmsDataKeyService,
   orgDAL,
   identityAccessTokenService,
   eventEmitter
@@ -121,7 +122,7 @@ export const identityJwtAuthServiceFactory = ({
     let subOrganizationId = isSubOrgIdentity ? org.id : null;
 
     try {
-      const { decryptor: orgDataKeyDecryptor } = await kmsService.createCipherPairWithDataKey({
+      const { decryptor: orgDataKeyDecryptor } = await kmsDataKeyService.createCipherPairWithDataKey({
         type: KmsDataKey.Organization,
         orgId: identity.orgId
       });
@@ -142,26 +143,14 @@ export const identityJwtAuthServiceFactory = ({
       let tokenData: Record<string, string | boolean | number> = {};
 
       if (identityJwtAuth.configurationType === JwtConfigurationType.JWKS) {
-        await blockLocalAndPrivateIpAddresses(identityJwtAuth.jwksUrl);
+        const decryptedJwksCaCert = orgDataKeyDecryptor({
+          cipherTextBlob: identityJwtAuth.encryptedJwksCaCert
+        }).toString();
 
-        let client: JwksClient;
-        if (identityJwtAuth.jwksUrl.includes("https:")) {
-          const decryptedJwksCaCert = orgDataKeyDecryptor({
-            cipherTextBlob: identityJwtAuth.encryptedJwksCaCert
-          }).toString();
-
-          const requestAgent = decryptedJwksCaCert
-            ? new https.Agent({ ca: decryptedJwksCaCert, rejectUnauthorized: true })
-            : undefined;
-          client = new JwksClient({
-            jwksUri: identityJwtAuth.jwksUrl,
-            requestAgent
-          });
-        } else {
-          client = new JwksClient({
-            jwksUri: identityJwtAuth.jwksUrl
-          });
-        }
+        const client = new JwksClient({
+          jwksUri: identityJwtAuth.jwksUrl,
+          fetcher: await buildSsrfSafeJwksFetcher(identityJwtAuth.jwksUrl, { ca: decryptedJwksCaCert || undefined })
+        });
 
         const { kid } = decodedToken.header as { kid: string };
         let jwtSigningKey;
@@ -508,12 +497,12 @@ export const identityJwtAuthServiceFactory = ({
       }
     );
 
-    await validateIdentityUpdateForSuperAdminPrivileges(identityId, isActorSuperAdmin);
+    await validateIdentityUpdateForSuperAdminPrivileges(instanceConfigService, identityId, isActorSuperAdmin);
 
     const plan = await licenseService.getPlan(identityMembershipOrg.scopeOrgId);
     const reformattedAccessTokenTrustedIps = accessTokenTrustedIps.map((accessTokenTrustedIp) => {
       if (
-        !plan.ipAllowlisting &&
+        !plan.has(PlanFeature.IpAllowlisting) &&
         accessTokenTrustedIp.ipAddress !== "0.0.0.0/0" &&
         accessTokenTrustedIp.ipAddress !== "::/0"
       )
@@ -532,7 +521,7 @@ export const identityJwtAuthServiceFactory = ({
       await blockLocalAndPrivateIpAddresses(jwksUrl);
     }
 
-    const { encryptor: orgDataKeyEncryptor } = await kmsService.createCipherPairWithDataKey({
+    const { encryptor: orgDataKeyEncryptor } = await kmsDataKeyService.createCipherPairWithDataKey({
       type: KmsDataKey.Organization,
       orgId: actorOrgId
     });
@@ -644,11 +633,11 @@ export const identityJwtAuthServiceFactory = ({
       }
     );
 
-    await validateIdentityUpdateForSuperAdminPrivileges(identityId, isActorSuperAdmin);
+    await validateIdentityUpdateForSuperAdminPrivileges(instanceConfigService, identityId, isActorSuperAdmin);
     const plan = await licenseService.getPlan(identityMembershipOrg.scopeOrgId);
     const reformattedAccessTokenTrustedIps = accessTokenTrustedIps?.map((accessTokenTrustedIp) => {
       if (
-        !plan.ipAllowlisting &&
+        !plan.has(PlanFeature.IpAllowlisting) &&
         accessTokenTrustedIp.ipAddress !== "0.0.0.0/0" &&
         accessTokenTrustedIp.ipAddress !== "::/0"
       )
@@ -683,7 +672,7 @@ export const identityJwtAuthServiceFactory = ({
     };
 
     const { encryptor: orgDataKeyEncryptor, decryptor: orgDataKeyDecryptor } =
-      await kmsService.createCipherPairWithDataKey({
+      await kmsDataKeyService.createCipherPairWithDataKey({
         type: KmsDataKey.Organization,
         orgId: actorOrgId
       });
@@ -780,7 +769,7 @@ export const identityJwtAuthServiceFactory = ({
     }
     const identityJwtAuth = await identityJwtAuthDAL.findOne({ identityId });
 
-    const { decryptor: orgDataKeyDecryptor } = await kmsService.createCipherPairWithDataKey({
+    const { decryptor: orgDataKeyDecryptor } = await kmsDataKeyService.createCipherPairWithDataKey({
       type: KmsDataKey.Organization,
       orgId: actorOrgId
     });
@@ -841,7 +830,7 @@ export const identityJwtAuthServiceFactory = ({
       }
     );
 
-    await validateIdentityUpdateForSuperAdminPrivileges(identityId, isActorSuperAdmin);
+    await validateIdentityUpdateForSuperAdminPrivileges(instanceConfigService, identityId, isActorSuperAdmin);
     const revokedIdentityJwtAuth = await identityJwtAuthDAL.transaction(async (tx) => {
       const deletedJwtAuth = await identityJwtAuthDAL.delete({ identityId }, tx);
       await identityAccessTokenDAL.delete({ identityId, authMethod: IdentityAuthMethod.JWT_AUTH }, tx);

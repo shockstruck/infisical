@@ -1,6 +1,8 @@
 import { Knex } from "knex";
 import pLimit from "p-limit";
 
+import { RuleViolationError } from "@app/domains/lib/errors";
+import { KmsDataKey, TKmsDataKeyService } from "@app/domains/platform/kms-core/ce/module";
 import { TGatewayPoolServiceFactory } from "@app/ee/services/gateway-pool/gateway-pool-service";
 import { TGatewayV2ServiceFactory } from "@app/ee/services/gateway-v2/gateway-v2-service";
 import { TPermissionServiceFactory } from "@app/ee/services/permission/permission-service-types";
@@ -10,8 +12,6 @@ import { KeyStorePrefixes, TKeyStoreFactory } from "@app/keystore/keystore";
 import { BadRequestError, NotFoundError } from "@app/lib/errors";
 import { WinRmRpcEndpoint } from "@app/lib/gateway-v2/winrm-rpc";
 import { logger } from "@app/lib/logger";
-import { TKmsServiceFactory } from "@app/services/kms/kms-service";
-import { KmsDataKey } from "@app/services/kms/kms-types";
 import { TMembershipDALFactory } from "@app/services/membership/membership-dal";
 import { TMembershipRoleDALFactory } from "@app/services/membership/membership-role-dal";
 import { TProjectDALFactory } from "@app/services/project/project-dal";
@@ -89,10 +89,10 @@ type TPamAccountRotationServiceFactoryDep = {
   permissionService: Pick<TPermissionServiceFactory, "getProjectPermission" | "getResourcePermission">;
   membershipDAL: Pick<TMembershipDALFactory, "findResourceMembershipsForActor">;
   membershipRoleDAL: Pick<TMembershipRoleDALFactory, "find">;
-  kmsService: Pick<TKmsServiceFactory, "createCipherPairWithDataKey">;
+  kmsDataKeyService: TKmsDataKeyService;
   keyStore: Pick<TKeyStoreFactory, "acquireLock">;
   gatewayV2Service: Pick<TGatewayV2ServiceFactory, "getPlatformConnectionDetailsByGatewayId">;
-  gatewayPoolService: Pick<TGatewayPoolServiceFactory, "resolveEffectiveGatewayId">;
+  gatewayPoolService: Pick<TGatewayPoolServiceFactory, "resolveEffectiveGatewayId" | "assertGatewayBindingInOrg">;
   pamAccountDependencyDAL: Pick<TPamAccountDependencyDALFactory, "findByAccountId" | "updateById">;
   rotationHandlers?: typeof PAM_ROTATION_FACTORY_MAP;
 };
@@ -105,7 +105,7 @@ export const pamAccountRotationServiceFactory = (deps: TPamAccountRotationServic
     permissionService,
     membershipDAL,
     membershipRoleDAL,
-    kmsService,
+    kmsDataKeyService,
     keyStore,
     gatewayV2Service,
     gatewayPoolService,
@@ -118,7 +118,7 @@ export const pamAccountRotationServiceFactory = (deps: TPamAccountRotationServic
   const gatewayDeps = { gatewayV2Service, gatewayPoolService };
 
   const getProjectCipher = (projectId: string) =>
-    kmsService.createCipherPairWithDataKey({ type: KmsDataKey.SecretManager, projectId });
+    kmsDataKeyService.createCipherPairWithDataKey({ type: KmsDataKey.SecretManager, projectId });
 
   const encrypt = async (projectId: string, data: Record<string, unknown>) => {
     const { encryptor } = await getProjectCipher(projectId);
@@ -598,6 +598,15 @@ export const pamAccountRotationServiceFactory = (deps: TPamAccountRotationServic
     } = await resolveRotator(account, targetCredentials, connectionDetails, { gatewayId, gatewayPoolId });
     handler.validateRotatorCredential?.({ accountType, password: auth.password });
     if (isDelegated) assertRotatorSameResource(accountType, rotatorConnectionDetails, connectionDetails);
+
+    const project = await projectDAL.findById(projectId);
+    if (!project) throw new NotFoundError({ message: "Project not found" });
+    await gatewayPoolService.assertGatewayBindingInOrg({
+      gatewayId: rotatorGatewayId,
+      gatewayPoolId: rotatorGatewayPoolId,
+      orgId: project.orgId
+    });
+
     // A delegated local account can't be logged in as to verify, so validate via the admin rotator instead.
     const verifyVia = isDelegated && accountType === PamAccountType.Windows ? auth : undefined;
 
@@ -1016,7 +1025,10 @@ export const pamAccountRotationServiceFactory = (deps: TPamAccountRotationServic
       await performRotation(account);
       return { rotationStatus: ROTATION_STATUS.Success };
     } catch (err) {
-      const message = err instanceof BadRequestError ? err.message : `Rotation failed: ${(err as Error).message}`;
+      const message =
+        err instanceof BadRequestError || err instanceof RuleViolationError
+          ? err.message
+          : `Rotation failed: ${(err as Error).message}`;
       return { rotationStatus: ROTATION_STATUS.Failed, message };
     }
   };

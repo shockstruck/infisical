@@ -1,6 +1,6 @@
 import { AuditLogEventClass } from "../auditLogSettings/types";
 import { CaStatus } from "../ca";
-import { CertStatus, CrlReason } from "../certificates/enums";
+import { CertificateRevocationSource, CertStatus, CrlReason } from "../certificates/enums";
 import { IdentityTrustedIp } from "../identities/types";
 import { PkiItemType } from "../pkiCollections/constants";
 import { WorkflowIntegration } from "../workflowIntegrations/types";
@@ -103,6 +103,11 @@ export interface EstAccountActor {
   metadata: EstAccountActorMetadata;
 }
 
+export interface MicrosoftAutoenrollmentAccountActor {
+  type: ActorType.MICROSOFT_AUTOENROLLMENT_ACCOUNT;
+  metadata: { profileId: string };
+}
+
 export interface AgentVaultProxyActor {
   type: ActorType.AGENT_VAULT_PROXY;
   metadata: { agentVaultProxyId: string };
@@ -118,6 +123,7 @@ export type Actor =
   | AcmeProfileActor
   | AcmeAccountActor
   | EstAccountActor
+  | MicrosoftAutoenrollmentAccountActor
   | AgentVaultProxyActor;
 
 interface GetSecretsEvent {
@@ -631,6 +637,7 @@ interface GetCaCsr {
   metadata: {
     caId: string;
     dn: string;
+    maxPathLength?: number;
   };
 }
 
@@ -656,6 +663,29 @@ interface ImportCaCert {
   metadata: {
     caId: string;
     dn: string;
+  };
+}
+
+interface ImportCaCrossSignedCert {
+  type: EventType.IMPORT_CA_CROSS_SIGNED_CERT;
+  metadata: {
+    caId: string;
+    caName: string;
+    issuer: string;
+    serialNumber: string;
+    notAfter: string;
+    replacedSerialNumber?: string;
+  };
+}
+
+interface DeleteCaCrossSignedCert {
+  type: EventType.DELETE_CA_CROSS_SIGNED_CERT;
+  metadata: {
+    caId: string;
+    caName: string;
+    issuer: string;
+    serialNumber: string;
+    notAfter: string;
   };
 }
 
@@ -716,6 +746,44 @@ interface RevokeCert {
     cn: string;
     serialNumber: string;
     revocationReason?: CrlReason;
+    approvalRequestId?: string;
+    requesterName?: string;
+    requesterEmail?: string;
+    crlWarning?: string;
+    source?: CertificateRevocationSource;
+  };
+}
+
+interface RequestCertRevocation {
+  type: EventType.REQUEST_CERT_REVOCATION;
+  metadata: {
+    certId: string;
+    cn: string;
+    serialNumber: string;
+    applicationId?: string | null;
+    applicationName?: string | null;
+    revocationReason: CrlReason;
+    approvalRequestId: string;
+    requesterName: string;
+    requesterEmail: string;
+    approvalPolicyId: string;
+    approvalPolicyName: string;
+  };
+}
+
+interface CertRevocationFailed {
+  type: EventType.CERT_REVOCATION_FAILED;
+  metadata: {
+    certId: string;
+    cn: string;
+    serialNumber: string;
+    applicationId: string;
+    applicationName?: string | null;
+    revocationReason: CrlReason;
+    approvalRequestId: string;
+    requesterName: string;
+    requesterEmail: string;
+    error: string;
   };
 }
 
@@ -1025,6 +1093,7 @@ interface SecretFolderAccessEventMetadata {
   environment: string;
   secretPath: string;
   permission: string;
+  isPermissionRecursive?: boolean;
   userId?: string;
   identityId?: string;
   isTemporary: boolean;
@@ -1105,12 +1174,16 @@ export type Event =
   | GetCaCert
   | SignIntermediate
   | ImportCaCert
+  | ImportCaCrossSignedCert
+  | DeleteCaCrossSignedCert
   | GetCaCrl
   | IssueCert
   | ImportCert
   | GetCert
   | DeleteCert
   | RevokeCert
+  | RequestCertRevocation
+  | CertRevocationFailed
   | GetCertBody
   | GetCertPrivateKey
   | GetCertBundle

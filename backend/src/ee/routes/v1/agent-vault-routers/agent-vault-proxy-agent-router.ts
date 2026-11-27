@@ -5,6 +5,7 @@ import {
   MAX_OAUTH_SCOPE_LENGTH,
   OAUTH_SCOPE_TOKEN_PATTERN
 } from "@app/ee/services/agent-vault-oauth/agent-vault-oauth-discovery-fns";
+import { getChunkDecisionProperties } from "@app/ee/services/agent-vault-session-log/agent-vault-session-log-fns";
 import {
   AgentVaultSessionLogChunkCreateResponseSchema,
   AgentVaultSessionLogChunkCreateSchema
@@ -12,6 +13,7 @@ import {
 import { AGENT_VAULT_SESSION_TOKEN_PREFIX } from "@app/ee/services/agent-vault-session/agent-vault-session-fns";
 import {
   AgentVaultCredentialType,
+  AgentVaultMemberType,
   AgentVaultOauthStatus,
   AgentVaultServiceType,
   AgentVaultTrafficPolicy
@@ -24,7 +26,8 @@ import {
   agentVaultCredentialRefreshLimit,
   agentVaultHeartbeatLimit,
   agentVaultResolveLimit,
-  agentVaultSessionLogChunkLimit
+  agentVaultSessionLogChunkLimit,
+  agentVaultUsageLimit
 } from "@app/server/config/rateLimiter";
 import { verifyAuth } from "@app/server/plugins/auth/verify-auth";
 import { AuthMode } from "@app/services/auth/auth-type";
@@ -33,7 +36,10 @@ import { PostHogEventTypes } from "@app/services/telemetry/telemetry-types";
 import { AgentVaultHostPatternSchema } from "./agent-vault-schemas";
 
 const ProxyConfigSchema = z.object({
-  trafficPolicy: z.nativeEnum(AgentVaultTrafficPolicy).describe(AGENT_VAULT.PROXY.trafficPolicy),
+  // Proxies still get the old name: a released CLI lets every host through under a value it doesn't know.
+  trafficPolicy: z
+    .enum([AgentVaultTrafficPolicy.AnyHost, AgentVaultTrafficPolicy.BundleHosts])
+    .describe(AGENT_VAULT.PROXY.trafficPolicyProxy),
   allowedHosts: z.string().nullable().describe(AGENT_VAULT.PROXY.allowedHosts),
   pollInterval: z.number().describe(AGENT_VAULT.PROXY.pollInterval)
 });
@@ -121,6 +127,37 @@ export const registerAgentVaultProxyAgentRouter = async (server: FastifyZodProvi
 
   server.route({
     method: "POST",
+    url: "/usage",
+    config: { rateLimit: agentVaultUsageLimit },
+    schema: {
+      hide: true,
+      operationId: "reportAgentVaultProxyUsage",
+      description: "Report how many requests a proxy brokered since its last report",
+      tags: [ApiDocsTags.AgentVaultProxies],
+      body: z.object({
+        reportId: z.string().uuid().describe(AGENT_VAULT.USAGE.reportId),
+        endedAt: z.coerce.date().describe(AGENT_VAULT.USAGE.endedAt),
+        brokered: z.number().int().min(0).max(1_000_000).describe(AGENT_VAULT.USAGE.brokered)
+      }),
+      response: { 204: z.string().length(0) }
+    },
+    onRequest: verifyAuth([AuthMode.AGENT_VAULT_PROXY_ACCESS_TOKEN]),
+    handler: async (req, res) => {
+      if (req.auth.authMode !== AuthMode.AGENT_VAULT_PROXY_ACCESS_TOKEN) {
+        throw new UnauthorizedError({ message: "A proxy token is required" });
+      }
+      const crossings = await server.services.agentVaultUsageService.recordProxyUsage({
+        orgId: req.permission.orgId,
+        ...req.body
+      });
+      // Not awaited: the proxy's report is recorded either way, and a notice must never slow or fail it.
+      void server.services.agentVaultFreeUsageNotice.notify(crossings);
+      return res.status(204).send("");
+    }
+  });
+
+  server.route({
+    method: "POST",
     url: "/heartbeat",
     config: { rateLimit: agentVaultHeartbeatLimit },
     schema: {
@@ -131,7 +168,15 @@ export const registerAgentVaultProxyAgentRouter = async (server: FastifyZodProvi
       response: { 200: z.object({ config: ProxyConfigSchema }) }
     },
     onRequest: verifyAuth([AuthMode.AGENT_VAULT_PROXY_ACCESS_TOKEN]),
-    handler: async (req) => server.services.agentVaultProxy.heartbeat({ proxyId: req.permission.id })
+    handler: async (req) => {
+      if (req.auth.authMode !== AuthMode.AGENT_VAULT_PROXY_ACCESS_TOKEN) {
+        throw new UnauthorizedError({ message: "A proxy token is required" });
+      }
+      return server.services.agentVaultProxy.heartbeat({
+        proxyId: req.permission.id,
+        tokenVersion: req.auth.token.tokenVersion
+      });
+    }
   });
 
   server.route({
@@ -159,9 +204,19 @@ export const registerAgentVaultProxyAgentRouter = async (server: FastifyZodProvi
             .object({
               id: z.string().uuid(),
               name: z.string(),
-              accessBundleName: z.string(),
+              accessBundleName: z.string().nullable(),
               type: z.nativeEnum(AgentVaultServiceType).describe(AGENT_VAULT.SERVICE.type),
-              hostPattern: z.string(),
+              // Null for a database or SSH service, so neither a new nor an old proxy matches HTTP traffic to it.
+              hostPattern: z.string().nullable(),
+              // Where a database or SSH service's server is. Null for HTTP and MCP services.
+              native: z
+                .object({
+                  host: z.string(),
+                  port: z.number(),
+                  database: z.string().nullable(),
+                  tls: z.object({ enabled: z.boolean(), verify: z.boolean(), ca: z.string().nullable() }).nullable()
+                })
+                .nullable(),
               allowedMethods: z.string().array().nullable(),
               allowedPathPrefixes: z.string().array().nullable(),
               allowedTools: z.string().array().nullable(),
@@ -176,18 +231,61 @@ export const registerAgentVaultProxyAgentRouter = async (server: FastifyZodProvi
                   .describe(JSON.stringify({ title: "Basic Auth" })),
                 z
                   .object({ type: z.literal(AgentVaultCredentialType.Passthrough) })
-                  .describe(JSON.stringify({ title: "Pass-through" }))
+                  .describe(JSON.stringify({ title: "Pass-through" })),
+                z
+                  .object({
+                    type: z.literal(AgentVaultCredentialType.SshKey),
+                    username: z.string(),
+                    privateKey: z.string(),
+                    certificate: z.string().optional()
+                  })
+                  .describe(JSON.stringify({ title: "SSH Key" }))
               ]),
               customHeaders: z.object({ name: z.string(), prefix: z.string(), value: z.string() }).array(),
               substitutions: z
                 .object({ placeholder: z.string(), surfaces: z.string().array(), value: z.string() })
                 .array(),
-              personalValuesMissing: z.boolean()
+              personalValuesMissing: z.boolean(),
+              // The OAuth variable a session's own service used was deleted. Always with personalValuesMissing, which
+              // older proxies refuse on.
+              credentialRemoved: z.boolean().optional(),
+              // The OAuth variable the service sends isn't signed in. Always with personalValuesMissing, like
+              // credentialRemoved.
+              credentialNotConnected: z.boolean().optional(),
+              // Proxies use it to tell the agent that a rejected credential is the member's own to fix.
+              memberProvided: z.boolean(),
+              // The bundle the service came from. Null for a service sent with the session.
+              accessBundleId: z.string().uuid().nullable(),
+              // Asked before the requests its narrowing picks, or every request without one: each HTTP or MCP request,
+              // or each database or SSH connection. Proxies from before narrowing read only url and secret and ask about
+              // every request of the service, which checks more, never less.
+              hook: z
+                .object({
+                  id: z.string().uuid(),
+                  name: z.string(),
+                  url: z.string(),
+                  secret: z.string(),
+                  methods: z.string().array().optional(),
+                  paths: z.string().array().optional(),
+                  tools: z.string().array().optional()
+                })
+                .nullable()
             })
             .array(),
           sessionLogs: z.object({
             enabled: z.boolean().describe(AGENT_VAULT.SESSION_LOGS.enabled),
             sessionKey: z.string().nullable().describe(AGENT_VAULT.SESSION_LOGS.proxySessionKey)
+          }),
+          session: z.object({
+            label: z.string().nullable(),
+            metadata: z.record(z.string(), z.string()),
+            actor: z.object({
+              type: z.enum([AgentVaultMemberType.User, AgentVaultMemberType.MachineIdentity]),
+              id: z.string().uuid(),
+              name: z.string(),
+              email: z.string().nullable()
+            }),
+            onBehalfOf: z.object({ id: z.string().uuid(), name: z.string(), email: z.string().nullable() }).nullable()
           })
         })
       }
@@ -318,7 +416,8 @@ export const registerAgentVaultProxyAgentRouter = async (server: FastifyZodProvi
             orgId,
             storageType,
             bytes: req.body.ciphertextBytes,
-            ...(req.body.recordCount !== undefined && { records: req.body.recordCount })
+            ...(req.body.recordCount !== undefined && { records: req.body.recordCount }),
+            ...getChunkDecisionProperties(req.body)
           }
         })
         .catch(() => {});

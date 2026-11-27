@@ -1,3 +1,4 @@
+import { CoolifyResourceType } from "@app/hooks/api/appConnections/coolify/types";
 import { AppConnection } from "@app/hooks/api/appConnections/enums";
 import {
   SecretSync,
@@ -7,9 +8,11 @@ import {
 import { CloudflarePagesVariableType } from "@app/hooks/api/secretSyncs/types/cloudflare-pages-sync";
 import { CloudflareSecretsStoreScope } from "@app/hooks/api/secretSyncs/types/cloudflare-secrets-store-sync";
 import { CloudflareWorkersVariableType } from "@app/hooks/api/secretSyncs/types/cloudflare-workers-sync";
+import { CoolifySyncScope } from "@app/hooks/api/secretSyncs/types/coolify-sync";
 import { GcpSyncScope } from "@app/hooks/api/secretSyncs/types/gcp-sync";
 import { GitHubSyncSecretType } from "@app/hooks/api/secretSyncs/types/github-sync";
 import { HumanitecSyncScope } from "@app/hooks/api/secretSyncs/types/humanitec-sync";
+import { JenkinsSyncScope } from "@app/hooks/api/secretSyncs/types/jenkins-sync";
 import { RenderSyncScope } from "@app/hooks/api/secretSyncs/types/render-sync";
 
 export const SECRET_SYNC_MAP: Record<
@@ -166,6 +169,12 @@ export const SECRET_SYNC_MAP: Record<
     category: "SECRETS",
     description: "Account-level secrets for Cloudflare Workers and AI Gateway."
   },
+  [SecretSync.Convex]: {
+    name: "Convex",
+    image: "Convex.png",
+    category: "PLATFORM",
+    description: "Environment variables for Convex deployments."
+  },
   [SecretSync.Zabbix]: {
     name: "Zabbix",
     image: "Zabbix.png",
@@ -263,7 +272,7 @@ export const SECRET_SYNC_MAP: Record<
     description: "Secrets in another Infisical instance."
   },
   [SecretSync.OVH]: {
-    name: "OVH Cloud",
+    name: "OVHcloud",
     image: "OVH.png",
     category: "CLOUD",
     description: "Secret vault on OVHcloud."
@@ -334,6 +343,18 @@ export const SECRET_SYNC_MAP: Record<
     image: "Keeper.png",
     category: "PASSWORD MANAGER",
     description: "Login records in a Keeper Password Manager shared folder."
+  },
+  [SecretSync.Jenkins]: {
+    name: "Jenkins",
+    image: "Jenkins.png",
+    category: "CI/CD",
+    description: "Secret text credentials in Jenkins global or folder stores."
+  },
+  [SecretSync.Coolify]: {
+    name: "Coolify",
+    image: "Coolify.png",
+    category: "HOSTING",
+    description: "Environment variables for Coolify applications, services and databases."
   }
 };
 
@@ -369,6 +390,7 @@ export const SECRET_SYNC_CONNECTION_MAP: Record<SecretSync, AppConnection> = {
   [SecretSync.CloudflarePages]: AppConnection.Cloudflare,
   [SecretSync.CloudflareWorkers]: AppConnection.Cloudflare,
   [SecretSync.CloudflareSecretsStore]: AppConnection.Cloudflare,
+  [SecretSync.Convex]: AppConnection.Convex,
   [SecretSync.Supabase]: AppConnection.Supabase,
   [SecretSync.Rundeck]: AppConnection.Rundeck,
   [SecretSync.Portainer]: AppConnection.Portainer,
@@ -396,7 +418,9 @@ export const SECRET_SYNC_CONNECTION_MAP: Record<SecretSync, AppConnection> = {
   [SecretSync.Cloud66]: AppConnection.Cloud66,
   [SecretSync.Spacelift]: AppConnection.Spacelift,
   [SecretSync.Daytona]: AppConnection.Daytona,
-  [SecretSync.Keeper]: AppConnection.Keeper
+  [SecretSync.Keeper]: AppConnection.Keeper,
+  [SecretSync.Jenkins]: AppConnection.Jenkins,
+  [SecretSync.Coolify]: AppConnection.Coolify
 };
 
 export const SECRET_SYNC_INITIAL_SYNC_BEHAVIOR_MAP: Record<
@@ -524,4 +548,20 @@ export const CLOUDFLARE_WORKERS_VARIABLE_TYPE_LABELS: Record<
   [CloudflareWorkersVariableType.Secret]: "Secret",
   [CloudflareWorkersVariableType.Text]: "Text",
   [CloudflareWorkersVariableType.Json]: "JSON"
+};
+
+export const JENKINS_SYNC_SCOPE_LABELS: Record<JenkinsSyncScope, string> = {
+  [JenkinsSyncScope.Global]: "Global",
+  [JenkinsSyncScope.Folder]: "Folder"
+};
+
+export const COOLIFY_RESOURCE_TYPE_LABELS: Record<CoolifyResourceType, string> = {
+  [CoolifyResourceType.Application]: "Application",
+  [CoolifyResourceType.Service]: "Service",
+  [CoolifyResourceType.Database]: "Database"
+};
+
+export const COOLIFY_SYNC_SCOPE_LABELS: Record<CoolifySyncScope, string> = {
+  [CoolifySyncScope.Production]: "Production",
+  [CoolifySyncScope.Preview]: "Preview Deployments"
 };
